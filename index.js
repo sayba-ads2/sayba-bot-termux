@@ -117,14 +117,24 @@ const DAFTAR_BOT = {
     '1': {
         nama:   'Sayba Satu',
         auth:   'auth_sayba',
-        nomor:  '628979602864'      // nomor WA bot ini (untuk kode pairing)
+        nomor:  '628979602864',     // nomor WA bot ini (untuk kode pairing)
+        grup:   ['BOT JAYA']        // grup tempat perintah boleh dipakai
     },
     '2': {
         nama:   'Sayba Dua',
         auth:   'auth_sayba2',
-        nomor:  '6281332611714'     // 081332611714
+        nomor:  '6281332611714',    // 081332611714
+        grup:   ['BOT JAYA']
     }
 };
+
+// Catatan tentang "grup":
+//   - Kosongkan ([]) kalau bot itu tidak boleh diperintah dari grup mana pun.
+//   - Nama harus PERSIS sama dengan nama grup di WhatsApp (huruf besar/kecil
+//     tidak masalah). Nama grup yang terbaca ditampilkan di log Termux.
+//   - Kalau kedua bot ada di grup yang sama DAN sama-sama mencantumkan grup
+//     itu, keduanya akan menjawab. Hapus dari salah satu kalau tidak mau.
+//   - Perintah di grup tetap hanya dilayani untuk owner.
 
 // ==========================================================
 //  Di bawah ini tidak perlu diubah
@@ -170,6 +180,8 @@ if (!KONFIG) {
 
 const AUTH_FOLDER = KONFIG.auth;
 const BOT_NAME    = KONFIG.nama;
+const GRUP_IZIN   = (KONFIG.grup || []).map(g => String(g).trim().toLowerCase());
+const grupDiizinkan = (nama) => GRUP_IZIN.includes(String(nama || '').trim().toLowerCase());
 const BOT_NUMBER  = (KONFIG.nomor || '').replace(/[^0-9]/g, '');
 const BOT_TAG     = `[BOT-${BOT_CODE.toUpperCase()} ${BOT_NAME}]`;
 
@@ -420,6 +432,23 @@ ${text}` });
         }
     };
 
+    // Nama grup disimpan sementara supaya tidak menanyakan server tiap pesan
+    const cacheNamaGrup = new Map();
+
+    const ambilNamaGrup = async (jidGrup) => {
+        const tersimpan = cacheNamaGrup.get(jidGrup);
+        if (tersimpan && Date.now() - tersimpan.waktu < 600000) return tersimpan.nama;
+
+        try {
+            const meta = await sock.groupMetadata(jidGrup);
+            cacheNamaGrup.set(jidGrup, { nama: meta.subject, waktu: Date.now() });
+            return meta.subject;
+        } catch (err) {
+            _origLog(`⚠️ Gagal membaca nama grup ${jidGrup}: ${err?.message || err}`);
+            return '';
+        }
+    };
+
     sock.ev.on('messages.upsert', async m => {
         const msg = m.messages[0];
 
@@ -504,7 +533,13 @@ ${text}` });
         const command = rawCommand;
         const isKnownCommand = command.startsWith('.') || ['info', 'link', 'sayba'].includes(command);
 
-        if (isKnownCommand && isGroup) return;
+        // Perintah di grup hanya dilayani kalau nama grupnya terdaftar
+        // pada "grup" milik bot ini di DAFTAR_BOT.
+        if (isKnownCommand && isGroup) {
+            const namaGrupIni = await ambilNamaGrup(sender);
+            _origLog(`   👥 Perintah dari grup: "${namaGrupIni}" | diizinkan? ${grupDiizinkan(namaGrupIni) ? 'YA' : 'TIDAK'}`);
+            if (!grupDiizinkan(namaGrupIni)) return;
+        }
 
         // ==========================================
         // .ceklid — SATU-SATUNYA PERINTAH YANG BOLEH DIPAKAI SIAPA SAJA
