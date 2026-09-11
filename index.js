@@ -91,24 +91,18 @@ const qrcode = require('qrcode-terminal');
 const fs = require('fs');
 const path = require('path');
 
-// Paket 'qrcode' dipakai untuk membuat QR berupa gambar PNG (agar bisa dikirim
-// lewat WhatsApp). Sifatnya opsional — kalau belum diinstal, bot tetap jalan
-// dan QR hanya tampil di terminal. Install: npm install qrcode
-let qrImage = null;
-try { qrImage = require('qrcode'); } catch (e) { /* opsional */ }
-
 // ==========================================================
-//  PENGATURAN BOT 1 — SEMUA DIATUR DI SINI
-//  File ini berdiri sendiri. Jalankan langsung: node index1.js
+//  PENGATURAN — SEMUA DIATUR DI SINI
+//  Login pakai QR CODE. Jalankan langsung: node index.js
 // ==========================================================
 
 // Identitas Anda sebagai owner. Boleh lebih dari satu.
-// Kalau bot tidak merespons, ketik .ceklid di chat bot tersebut,
+// Kalau bot tidak merespons, ketik .ceklid di chat bot,
 // lalu tambahkan angka yang muncul ke daftar ini.
 // Tiap owner ditulis berpasangan: LID dan nomor teleponnya.
-// Nomor telepon dipakai sebagai alamat balasan, karena alamat @lid
-// sering tidak bisa dibuka HP setelah bot login ulang.
-// Cek LID/nomor Anda dengan mengetik .ceklid di chat bot.
+// Nomor telepon dipakai sebagai alamat cadangan (laporan awal),
+// karena alamat @lid kadang tidak bisa dibuka HP setelah bot
+// login ulang. Cek LID/nomor Anda dengan mengetik .ceklid di chat bot.
 const DAFTAR_OWNER = [
     { lid: '268697650352299', nomor: '6287803445749' },
     { lid: '20706725200037',  nomor: '6287792634063' }
@@ -130,14 +124,12 @@ const nomorOwnerDari = (id) => {
 // ----------------------------------------------------------
 // Identitas bot ini
 // ----------------------------------------------------------
-const BOT_CODE   = '1';
-const BOT_NAME   = 'Sayba Satu';
-const AUTH_FOLDER = 'auth_sayba';
-const BOT_NUMBER  = '628979602864';   // nomor WA bot ini, untuk kode pairing (kosongkan '' untuk QR)
-const GRUP_IZIN_ASLI = ["BOT JAYA"]; // nama grup tempat perintah boleh dipakai di sini
+const BOT_NAME       = 'Sayba Bot';
+const AUTH_FOLDER    = 'auth_sayba';
+const GRUP_IZIN_ASLI = ['BOT JAYA']; // nama grup tempat perintah boleh dipakai
 
 // Catatan tentang GRUP_IZIN_ASLI:
-//   - Kosongkan ([]) kalau bot ini tidak boleh diperintah dari grup mana pun.
+//   - Kosongkan ([]) kalau bot tidak boleh diperintah dari grup mana pun.
 //   - Nama harus PERSIS sama dengan nama grup di WhatsApp (huruf besar/kecil
 //     tidak masalah). Nama grup yang terbaca ditampilkan di log Termux.
 //   - Perintah di grup tetap hanya dilayani untuk owner.
@@ -145,22 +137,12 @@ const GRUP_IZIN_ASLI = ["BOT JAYA"]; // nama grup tempat perintah boleh dipakai 
 // ==========================================================
 //  Di bawah ini tidak perlu diubah
 // ==========================================================
-const BOT_TAG = `[BOT-${BOT_CODE.toUpperCase()} ${BOT_NAME}]`;
+const BOT_TAG = `[${BOT_NAME}]`;
 const GRUP_IZIN = GRUP_IZIN_ASLI.map(g => String(g).trim().toLowerCase());
 const grupDiizinkan = (nama) => GRUP_IZIN.includes(String(nama || '').trim().toLowerCase());
 
 const pureOwner = OWNER_IDS[0] || '';   // Dipakai untuk alamat kirim laporan
 const isOwnerId = (id) => OWNER_IDS.includes(id);
-
-// Kode bot lain yang beroperasi bersamaan (di HP/grup yang sama), supaya
-// perintah seperti .status1 / .status2 bisa dibedakan dari command biasa.
-// Tambahkan kode di sini kalau menambah bot ke-3, ke-4, dst.
-const KODE_BOT_DIKENAL = ['1', '2'];
-
-// Folder titipan QR antar bot: bot yang sudah online akan mengirim QR
-// milik bot lain ke WhatsApp Owner sebagai gambar.
-const QR_SHARE_DIR = path.join(__dirname, 'qr_share');
-try { fs.mkdirSync(QR_SHARE_DIR, { recursive: true }); } catch (e) {}
 
 if (!pureOwner) {
     _origLog('❌ OWNER_IDS masih kosong! Isi LID/nomor Anda di bagian atas index.js.');
@@ -170,7 +152,8 @@ if (!pureOwner) {
 // ==========================================================
 // KUNCI FOLDER SESI
 // Dua proses yang memakai folder auth yang sama akan saling merebut
-// koneksi dan gagal terus. Ini mencegahnya sejak awal.
+// koneksi dan gagal terus. Ini mencegahnya sejak awal — misalnya kalau
+// tidak sengaja menjalankan "node index.js" dua kali sekaligus.
 // ==========================================================
 const LOCK_FILE = path.join(__dirname, `${AUTH_FOLDER}.lock`);
 try {
@@ -182,9 +165,9 @@ try {
         if (masihHidup && pidLama !== process.pid) {
             _origLog('==========================================');
             _origLog(`❌ FOLDER "${AUTH_FOLDER}" SEDANG DIPAKAI PROSES LAIN (PID ${pidLama}).`);
-            _origLog(`   Bot "${BOT_CODE}" tidak dijalankan agar sesi tidak rusak.`);
-            _origLog(`   Kemungkinan dua proses menjalankan bot yang sama.`);
-            _origLog(`   Periksa dengan: pm2 list`);
+            _origLog('   Bot ini tidak dijalankan agar sesi tidak rusak.');
+            _origLog('   Kemungkinan ada proses lain yang masih berjalan.');
+            _origLog('   Periksa dengan: pm2 list');
             _origLog('==========================================');
             process.exit(0);   // kode 0 supaya pm2 tidak mengulang terus
         }
@@ -200,7 +183,7 @@ process.on('SIGTERM', () => { lepasKunci(); process.exit(0); });
 _origLog('==========================================');
 _origLog(`🤖 ${BOT_TAG}`);
 _origLog(`📁 Folder auth : ${AUTH_FOLDER}`);
-_origLog(`📱 Nomor bot   : ${BOT_NUMBER || '(kosong, login pakai QR)'}`);
+_origLog(`🔗 Login       : QR CODE`);
 _origLog(`👤 Owner       : ${OWNER_IDS.join(', ')}`);
 _origLog('==========================================');
 let tempWhitelist = [];
@@ -231,37 +214,13 @@ const formatDuration = (ms) => {
     return `${m} menit ${s} detik`;
 };
 
-let qrWatcher = null;     // Pemantau QR bot lain (dibuat sekali saja)
-
-// ==========================================================
-// PENGAMAN LOOP PAIRING
-// Kalau koneksi terus terputus SEBELUM berhasil login, jangan minta
-// kode baru tiap kali dan jangan langsung sambung ulang — permintaan
-// kode yang bertubi-tubi bisa membuat WhatsApp menahan/menolak semua
-// kodenya, sehingga tidak ada satu pun kode yang sempat berhasil
-// dipakai. Variabel ini di luar startBot() supaya nilainya bertahan
-// tiap kali startBot() memanggil dirinya sendiri untuk sambung ulang.
-// ==========================================================
-let waktuKodeTerakhir = 0;
-let percobaanBerturutTurut = 0;
-const BATAS_PERCOBAAN = 4;
-const JEDA_KODE_MIN_MS = 45000;
-let berhentiOtomatis = false;
-
 async function startBot() {
-    if (berhentiOtomatis) {
-        _origLog(`⛔ [${BOT_CODE}] Tidak mencoba sambung otomatis lagi. Restart manual bot ini untuk mencoba ulang.`);
-        return;
-    }
-
     const { state, saveCreds } = await useMultiFileAuthState(AUTH_FOLDER);
-
-    const usePairingCode = Boolean(BOT_NUMBER) && !state.creds.registered;
 
     const sock = makeWASocket({
         auth: state,
         logger: pino({ level: "silent" }),
-        printQRInTerminal: !usePairingCode
+        printQRInTerminal: true
     });
 
     sock.ev.on('creds.update', saveCreds);
@@ -276,102 +235,31 @@ async function startBot() {
         const jenis = Object.keys(isi || {})[0] || '?';
         try {
             const hasil = await _kirimAsli(jid, isi, opsi);
-            _origLog(`   📤 [${BOT_CODE}] kirim ${jenis} ke ${jid} → OK (id: ${hasil?.key?.id || '-'})`);
+            _origLog(`   📤 kirim ${jenis} ke ${jid} → OK (id: ${hasil?.key?.id || '-'})`);
             return hasil;
         } catch (err) {
-            _origError(`   ❌ [${BOT_CODE}] GAGAL kirim ${jenis} ke ${jid} → ${err?.message || err}`);
+            _origError(`   ❌ GAGAL kirim ${jenis} ke ${jid} → ${err?.message || err}`);
             throw err;
         }
     };
 
-    // === LOGIN PAKAI KODE PAIRING (tanpa QR) ===
-    if (usePairingCode) {
-        const mintaKode = async (sisaPercobaan = 5) => {
-            try {
-                const code = await sock.requestPairingCode(BOT_NUMBER);
-                const rapi = code.match(/.{1,4}/g).join('-');
-                waktuKodeTerakhir = Date.now();
-                _origLog('\n==========================================');
-                _origLog(`🔗 KODE PAIRING ${BOT_TAG}`);
-                _origLog(`📱 Nomor  : ${BOT_NUMBER}`);
-                _origLog(`🔢 KODE   : ${rapi}`);
-                _origLog('Buka WA > Perangkat Tertaut > Tautkan dengan nomor telepon');
-                _origLog('==========================================\n');
-            } catch (err) {
-                const pesan = err?.message || String(err);
-                if (sisaPercobaan > 0) {
-                    _origLog(`⏳ Kode pairing belum bisa diminta (${pesan}). Mencoba lagi 8 detik lagi... [sisa ${sisaPercobaan}]`);
-                    setTimeout(() => mintaKode(sisaPercobaan - 1), 8000);
-                } else {
-                    _origError(`❌ Gagal meminta kode pairing setelah beberapa kali: ${pesan}`);
-                    _origError(`   Periksa nomor "${BOT_NUMBER}" dan koneksi internet, lalu restart bot ini.`);
-                }
-            }
-        };
-
-        // Jangan minta kode baru kalau kode sebelumnya baru saja diberikan —
-        // ini yang tadinya membuat bot minta kode berkali-kali dalam
-        // hitungan detik setiap koneksi terputus-sambung, sampai WhatsApp
-        // ikut menahan/menolak kodenya.
-        const sisaJeda = JEDA_KODE_MIN_MS - (Date.now() - waktuKodeTerakhir);
-        if (sisaJeda > 0) {
-            _origLog(`⏳ [${BOT_CODE}] Kode pairing sebelumnya masih berlaku (~${Math.ceil(sisaJeda / 1000)} detik lagi). Tidak minta kode baru dulu.`);
-        } else {
-            setTimeout(() => mintaKode(), 5000);
-        }
-    }
-
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
 
-        if (qr && !usePairingCode) {
+        if (qr) {
             console.log('\n--- SISTEM MEMINTA LOGIN ---');
             qrcode.generate(qr, { small: true });
             console.log('SILAKAN SCAN QR CODE DI ATAS!\n');
-
-            // Titipkan QR sebagai gambar agar bot lain yang sudah online
-            // bisa mengirimkannya ke WhatsApp Owner
-            if (qrImage) {
-                try {
-                    const file = path.join(QR_SHARE_DIR, `qr_${BOT_CODE}.png`);
-                    await qrImage.toFile(file, qr, { width: 512, margin: 2 });
-                    fs.writeFileSync(file + '.name', `${BOT_NAME}|${BOT_CODE}`);
-                } catch (err) {
-                    _origError('⚠️ Gagal menyimpan gambar QR:', err?.message || err);
-                }
-            }
         }
 
-        if(connection === 'close') {
+        if (connection === 'close') {
             const shouldReconnect = lastDisconnect.error?.output?.statusCode !== DisconnectReason.loggedOut;
-
-            if (!shouldReconnect) return; // logged out, tidak perlu sambung ulang
-
-            if (!state.creds.registered) {
-                // Belum pernah berhasil login — jangan langsung sambung ulang
-                // tanpa jeda, supaya tidak jadi badai permintaan ke WhatsApp.
-                percobaanBerturutTurut++;
-
-                if (percobaanBerturutTurut >= BATAS_PERCOBAAN) {
-                    berhentiOtomatis = true;
-                    _origLog('==========================================');
-                    _origLog(`❌ [${BOT_CODE}] Koneksi terputus ${percobaanBerturutTurut}x berturut-turut sebelum berhasil login.`);
-                    _origLog('   WhatsApp kemungkinan menahan percobaan pairing yang terlalu sering.');
-                    _origLog('   Bot BERHENTI mencoba otomatis.');
-                    _origLog('   Tunggu 15 menit, lalu jalankan ulang bot ini (pm2 list untuk lihat namanya,');
-                    _origLog('   lalu: pm2 restart <nama>).');
-                    _origLog('==========================================');
-                    return;
-                }
-
-                _origLog(`🔁 [${BOT_CODE}] Sambung ulang dalam 5 detik... (percobaan ${percobaanBerturutTurut}/${BATAS_PERCOBAAN})`);
-                setTimeout(() => startBot(), 5000);
-                return;
+            if (shouldReconnect) {
+                // Jeda kecil supaya tidak jadi sambung ulang bertubi-tubi
+                // kalau koneksi memang sedang tidak stabil.
+                setTimeout(() => startBot(), 3000);
             }
-
-            startBot();
-        } else if(connection === 'open') {
-            percobaanBerturutTurut = 0; // koneksi berhasil, hitungan direset
+        } else if (connection === 'open') {
             console.log(`✅ ${BOT_TAG} berhasil terhubung ke WhatsApp!`);
 
             // Bukti bot ini tertaut ke akun yang mana
@@ -383,20 +271,6 @@ async function startBot() {
                 _origLog(`   ⚠️ PERINGATAN: bot ini tertaut ke AKUN OWNER SENDIRI.`);
                 _origLog(`      Pesan Anda akan terbaca "fromMe" dan selalu diabaikan.`);
             }
-
-            // QR sendiri sudah tidak diperlukan
-            try {
-                const mine = path.join(QR_SHARE_DIR, `qr_${BOT_CODE}.png`);
-                fs.unlinkSync(mine);
-                fs.unlinkSync(mine + '.name');
-            } catch (e) {}
-
-            // Mulai memantau QR milik bot lain (sekali saja)
-            if (!qrWatcher) {
-                qrWatcher = setInterval(() => { relayQrToOwner(); }, 10000);
-                _origLog('👀 Memantau QR bot lain untuk dikirim ke WhatsApp Owner.');
-            }
-
         }
     });
 
@@ -428,57 +302,6 @@ ${text}` });
     };
 
     // ==========================================
-    // PENGANTAR QR: bot yang sudah online mengirimkan QR milik bot LAIN
-    // ke WhatsApp Owner, supaya tidak perlu melihat terminal.
-    // QR WhatsApp hanya berlaku ±60 detik, jadi dikirim ulang saat berganti.
-    // ==========================================
-    const qrSentAt = {};      // kode bot -> waktu kirim terakhir
-    const qrSentMtime = {};   // kode bot -> mtime file terakhir dikirim
-
-    const relayQrToOwner = async () => {
-        let files;
-        try { files = fs.readdirSync(QR_SHARE_DIR); } catch (e) { return; }
-
-        for (const f of files) {
-            if (!f.endsWith('.png')) continue;
-
-            const kode = f.replace('qr_', '').replace('.png', '');
-            if (kode === BOT_CODE) continue; // QR sendiri, tidak perlu dikirim
-
-            const full = path.join(QR_SHARE_DIR, f);
-            let stat;
-            try { stat = fs.statSync(full); } catch (e) { continue; }
-
-            // QR basi (lebih dari 2 menit) dibuang saja
-            if (Date.now() - stat.mtimeMs > 120000) {
-                try { fs.unlinkSync(full); fs.unlinkSync(full + '.name'); } catch (e) {}
-                continue;
-            }
-
-            if (qrSentMtime[kode] === stat.mtimeMs) continue;            // Sudah dikirim
-            if (Date.now() - (qrSentAt[kode] || 0) < 40000) continue;    // Jangan terlalu sering
-
-            let nama = `Bot ${kode}`;
-            try { nama = fs.readFileSync(full + '.name', 'utf8').split('|')[0]; } catch (e) {}
-
-            try {
-                await sock.sendMessage(ownerJid, {
-                    image: fs.readFileSync(full),
-                    caption: `📲 *QR LOGIN UNTUK ${nama.toUpperCase()}*\n\n` +
-                             `Scan dari HP lain:\nWA > Perangkat Tertaut > Tautkan Perangkat\n\n` +
-                             `⏳ Berlaku ±60 detik. Kalau kedaluwarsa, QR baru dikirim otomatis.\n` +
-                             `_Dikirim oleh ${BOT_TAG}_`
-                });
-                qrSentAt[kode] = Date.now();
-                qrSentMtime[kode] = stat.mtimeMs;
-                _origLog(`📤 QR milik bot ${kode} dikirim ke WhatsApp Owner.`);
-            } catch (err) {
-                _origError('⚠️ Gagal mengirim QR ke Owner:', err?.message || err);
-            }
-        }
-    };
-
-    // ==========================================
     // PEMANTAU STATUS PENGIRIMAN
     // Menunjukkan pesan yang kita kirim benar-benar SAMPAI atau tidak.
     //   SERVER  = baru diterima server WhatsApp
@@ -494,7 +317,7 @@ ${text}` });
             const st = u.update?.status;
             if (st === undefined || st === null) continue;
             if (!u.key?.fromMe) continue;   // hanya pantau pesan kita sendiri
-            _origLog(`   📬 [${BOT_CODE}] pesan ${u.key?.id} ke ${u.key?.remoteJid} → ${namaStatus[st] || st}`);
+            _origLog(`   📬 pesan ${u.key?.id} ke ${u.key?.remoteJid} → ${namaStatus[st] || st}`);
         }
     });
 
@@ -519,7 +342,7 @@ ${text}` });
         const msg = m.messages[0];
 
         // Log diagnosa: bukti bahwa pesan benar-benar sampai ke bot ini
-        _origLog(`📩 [${BOT_CODE}] pesan masuk | dari: ${msg?.key?.remoteJid || '?'} | fromMe: ${msg?.key?.fromMe} | jenis: ${msg?.message ? Object.keys(msg.message)[0] : 'kosong'}`);
+        _origLog(`📩 pesan masuk | dari: ${msg?.key?.remoteJid || '?'} | fromMe: ${msg?.key?.fromMe} | jenis: ${msg?.message ? Object.keys(msg.message)[0] : 'kosong'}`);
 
         // Pesan yang gagal didekripsi datang dalam keadaan kosong.
         // WhatsApp akan mengirim ulang otomatis setelah sesi diperbarui.
@@ -529,7 +352,7 @@ ${text}` });
             _origLog(`   ⚠️ Pesan tidak bisa dibuka (sesi belum cocok). Tunggu kiriman ulang, atau minta pengirim kirim pesan baru.`);
         }
 
-        if(!msg.message || msg.key.fromMe) return;
+        if (!msg.message || msg.key.fromMe) return;
 
         const sender = msg.key.remoteJid;
         const isGroup = sender.endsWith('@g.us');
@@ -537,7 +360,7 @@ ${text}` });
         const pureParticipant = participant.split(':')[0].split('@')[0];
 
         // Owner bisa terlihat sebagai nomor biasa ATAU sebagai LID, dan LID-nya
-        // berbeda di tiap bot. Semua kemungkinan identitas pengirim dicocokkan.
+        // berbeda di tiap sesi. Semua kemungkinan identitas pengirim dicocokkan.
         const idPengirim = [
             pureParticipant,
             msg.key.participantAlt, msg.key.participantPn,
@@ -556,14 +379,11 @@ ${text}` });
             _origLog(`📮 Alamat laporan owner diperbarui: ${ownerJid}`);
         }
 
-        // Alamat untuk membalas. Chat beralamat @lid sering tidak bisa dibuka
-        // HP owner setelah bot login ulang, jadi balasan diarahkan ke nomor
-        // telepon owner bila diketahui.
         // Balas ke ALAMAT CHAT ASLI. Jangan dialihkan ke nomor telepon:
-        // sesi WhatsApp yang baru dibuat memakai alamat @lid sepenuhnya, dan
-        // kiriman ke @s.whatsapp.net diterima server tapi tidak diteruskan.
-        // Sesi lama masih menerima keduanya — itu sebabnya bot lama terlihat
-        // baik-baik saja sementara bot baru seperti bisu.
+        // sesi WhatsApp baru memakai alamat @lid sepenuhnya, dan kiriman ke
+        // @s.whatsapp.net diterima server tapi tidak diteruskan. Sesi lama
+        // masih menerima keduanya — itu sebabnya sesi baru bisa terlihat
+        // "bisu" kalau balasannya dialihkan ke alamat yang salah.
         const alamatBalas = sender;
         const pakaiQuote = msg;
 
@@ -584,57 +404,22 @@ ${text}` });
         if (!text) return;
 
         const args = text.trim().split(/ +/);
-        const rawCommand = args[0].toLowerCase();
+        const command = args[0].toLowerCase();
 
         // Log diagnosa: teks terbaca & apakah pengirim dikenali sebagai owner
         _origLog(`   ↳ teks: "${text.slice(0, 40)}" | id terbaca: [${idPengirim.join(', ')}] | owner? ${isOwner ? 'YA' : 'TIDAK'}`);
 
-        // ==========================================
-        // ATURAN PERINTAH
-        // Tiap bot berdiri sendiri: perintah polos (.status, .bulk, dst)
-        // dilayani di chat pribadi bot yang bersangkutan.
-        // Di grup perintah diabaikan, supaya kalau beberapa bot ada di grup
-        // yang sama tidak ada dua bot menjawab pertanyaan yang sama.
-        // ==========================================
-        // ==========================================
-        // KODE BOT DI BELAKANG PERINTAH
-        // .status1 -> hanya dikerjakan bot 1
-        // .status2 -> hanya dikerjakan bot 2
-        // .status  -> dikerjakan bot mana pun yang menerimanya
-        // ==========================================
-        const cocokKode = rawCommand.match(/^(\.?[a-z]+?)([0-9]+)$/);
-        let command = rawCommand;
-        let kodeDiminta = null;
-
-        if (cocokKode && KODE_BOT_DIKENAL.includes(cocokKode[2])) {
-            command = cocokKode[1];
-            kodeDiminta = cocokKode[2];
-        }
-
         const isKnownCommand = command.startsWith('.') || ['info', 'link', 'sayba'].includes(command);
 
-        if (isKnownCommand && kodeDiminta && kodeDiminta !== BOT_CODE) {
-            _origLog(`   ⏭️ "${rawCommand}" untuk bot ${kodeDiminta}, bukan bot ${BOT_CODE}. Dilewati.`);
-            return;
-        }
-
         // Perintah di grup hanya dilayani kalau nama grupnya terdaftar
-        // pada "grup" milik bot ini (lihat GRUP_IZIN_ASLI di atas).
+        // pada GRUP_IZIN_ASLI di atas — supaya bot tidak menjawab di
+        // sembarang grup yang dimasukinya.
         if (isKnownCommand && isGroup) {
             const namaGrupIni = await ambilNamaGrup(sender);
             _origLog(`   👥 Perintah dari grup: "${namaGrupIni}" | diizinkan? ${grupDiizinkan(namaGrupIni) ? 'YA' : 'TIDAK'}`);
             if (!grupDiizinkan(namaGrupIni)) return;
         }
 
-        // ==========================================
-        // .ceklid — SATU-SATUNYA PERINTAH YANG BOLEH DIPAKAI SIAPA SAJA
-        // Membalas pengirim dengan LID / nomor miliknya sendiri.
-        // Diletakkan SEBELUM gerbang owner, jadi orang lain pun dibalas.
-        // ==========================================
-        // ==========================================
-        // .tes — kirim ke SEMUA kemungkinan alamat owner
-        // Yang sampai di HP Anda berarti alamat yang benar.
-        // ==========================================
         // ==========================================
         // .kirim <nomor> [pesan] — uji kirim japri ke nomor mana pun
         // Dipakai untuk memastikan bot ini bisa mengirim pesan pribadi.
@@ -654,7 +439,7 @@ ${text}` });
                 // Pastikan dulu nomornya terdaftar di WhatsApp
                 const cek = await sock.onWhatsApp(jidTujuan);
                 const ada = Array.isArray(cek) ? cek[0] : null;
-                _origLog(`   🔎 [${BOT_CODE}] ${nomorTujuan} terdaftar? ${ada?.exists ? 'YA' : 'TIDAK'} | jid: ${ada?.jid || '-'} | lid: ${ada?.lid || '-'}`);
+                _origLog(`   🔎 ${nomorTujuan} terdaftar? ${ada?.exists ? 'YA' : 'TIDAK'} | jid: ${ada?.jid || '-'} | lid: ${ada?.lid || '-'}`);
 
                 if (!ada?.exists) {
                     await sock.sendMessage(sender, { text: `❌ ${nomorTujuan} tidak terdaftar di WhatsApp.` }, (msg ? { quoted: msg } : {}));
@@ -664,18 +449,22 @@ ${text}` });
                 // Kirim ke alamat yang diberikan WhatsApp sendiri
                 const alamatAsli = ada.jid || jidTujuan;
                 const r = await sock.sendMessage(alamatAsli, { text: isiPesan });
-                _origLog(`   🧪 [${BOT_CODE}] uji kirim -> ${alamatAsli} | id: ${r?.key?.id || '-'}`);
+                _origLog(`   🧪 uji kirim -> ${alamatAsli} | id: ${r?.key?.id || '-'}`);
 
                 await sock.sendMessage(sender, { text:
                     `📤 Dikirim ke ${nomorTujuan}\nAlamat: ${alamatAsli}\nID: ${r?.key?.id || '-'}\n\nPeriksa HP tujuan. Status kirim muncul di log Termux.`
                 }, (msg ? { quoted: msg } : {}));
             } catch (err) {
-                _origError(`   ❌ [${BOT_CODE}] uji kirim gagal: ${err?.message || err}`);
+                _origError(`   ❌ uji kirim gagal: ${err?.message || err}`);
                 await sock.sendMessage(sender, { text: `❌ Gagal: ${err?.message || err}` }, (msg ? { quoted: msg } : {}));
             }
             return;
         }
 
+        // ==========================================
+        // .tes — kirim ke SEMUA kemungkinan alamat owner
+        // Yang sampai di HP Anda berarti alamat yang benar.
+        // ==========================================
         if (['.tes', '.test', '.uji', '.cek'].includes(command) && isOwner) {
             const nomorDia = idPengirim.map(nomorOwnerDari).find(Boolean);
 
@@ -694,15 +483,20 @@ ${text}` });
                     const r = await sock.sendMessage(jid, {
                         text: `🧪 UJI ALAMAT — ${label}\n\nBot: ${BOT_NAME}\nDikirim ke: ${jid}\n\nKalau pesan ini Anda terima, alamat inilah yang berfungsi.`
                     });
-                    _origLog(`   🧪 [${BOT_CODE}] uji "${label}" -> ${jid} | id: ${r?.key?.id || '-'}`);
+                    _origLog(`   🧪 uji "${label}" -> ${jid} | id: ${r?.key?.id || '-'}`);
                 } catch (err) {
-                    _origError(`   🧪 [${BOT_CODE}] uji "${label}" -> ${jid} GAGAL: ${err?.message || err}`);
+                    _origError(`   🧪 uji "${label}" -> ${jid} GAGAL: ${err?.message || err}`);
                 }
                 await sleep(1500);
             }
             return;
         }
 
+        // ==========================================
+        // .ceklid — SATU-SATUNYA PERINTAH YANG BOLEH DIPAKAI SIAPA SAJA
+        // Membalas pengirim dengan LID / nomor miliknya sendiri.
+        // Diletakkan SEBELUM gerbang owner, jadi orang lain pun dibalas.
+        // ==========================================
         if (command === '.ceklid') {
             const k = msg.key;
 
@@ -820,9 +614,6 @@ ${text}` });
         // ==========================================
         // MULAI SINI: HANYA OWNER
         // ==========================================
-
-        // Semua perintah owner dikumpulkan di sini supaya bisa dipanggil
-        // dari dua jalur: chat langsung, dan titipan dari bot lain (jembatan).
         await runOwnerCommand({
             command, args,
             sender: alamatBalas,
@@ -832,7 +623,7 @@ ${text}` });
     });
 
     const runOwnerCommand = async ({ command, args, sender, msg, extendedMessage }) => {
-        _origLog(`   ⚙️ [${BOT_CODE}] menjalankan "${command}" | whitelist: ${tempWhitelist.length} | bulk jalan: ${isBulkRunning ? 'ya' : 'tidak'} | balas ke: ${sender}`);
+        _origLog(`   ⚙️ menjalankan "${command}" | whitelist: ${tempWhitelist.length} | bulk jalan: ${isBulkRunning ? 'ya' : 'tidak'} | balas ke: ${sender}`);
 
         // Perintah yang dikenali bot ini
         const PERINTAH_DIKENAL = [
@@ -846,273 +637,272 @@ ${text}` });
         if (!command.startsWith('.') && !['info', 'link', 'sayba'].includes(command)) return;
 
         if (!PERINTAH_DIKENAL.includes(command)) {
-            _origLog(`   ❓ [${BOT_CODE}] perintah "${command}" tidak dikenal.`);
+            _origLog(`   ❓ perintah "${command}" tidak dikenal.`);
             await sock.sendMessage(sender, { text:
                 `❓ Perintah *${command}* tidak dikenal.\n\n` +
                 `Yang tersedia:\n` +
                 `• .status\n• .ceklid\n• .getmembers <nama grup>\n` +
                 `• .setwhitelist <nomor>\n• .bulk  (reply pesan promo)\n` +
-                `• .stopbulk\n• .tes  (uji alamat balasan)\n\n` +
-                `_Tambahkan angka bot di belakang bila perlu: .status${BOT_CODE}_`
+                `• .stopbulk\n• .tes  (uji alamat balasan)\n• .kirim <nomor> [pesan]`
             }, (msg ? { quoted: msg } : {}));
             return;
         }
 
-            // Info website (sekarang hanya dibalas ke owner)
-            if (['info', 'link', 'sayba'].includes(command)) {
-                await sock.sendMessage(sender, { text: 'Kunjungi website resmi kami di: https://sayba.id' }, (msg ? { quoted: msg } : {}));
-                return;
+        // Info website
+        if (['info', 'link', 'sayba'].includes(command)) {
+            await sock.sendMessage(sender, { text: 'Kunjungi website resmi kami di: https://sayba.id' }, (msg ? { quoted: msg } : {}));
+            return;
+        }
+
+        // ==========================================
+        // FITUR ADMIN (HANYA OWNER YANG BISA)
+        // ==========================================
+
+        if (command === '.getmembers') {
+            const groupName = args.slice(1).join(" ");
+            if (!groupName) return await sock.sendMessage(sender, { text: '❌ Ketik nama grupnya.' }, (msg ? { quoted: msg } : {}));
+
+            const groups = await sock.groupFetchAllParticipating();
+            let targetGroup = null;
+
+            for (let id in groups) {
+                if (groups[id].subject === groupName) {
+                    targetGroup = groups[id];
+                    break;
+                }
             }
 
-            // ==========================================
-            // FITUR ADMIN (HANYA OWNER YANG BISA)
-            // ==========================================
+            if (!targetGroup) return await sock.sendMessage(sender, { text: `❌ Grup tidak ditemukan.` }, (msg ? { quoted: msg } : {}));
 
-            if (command === '.getmembers') {
-                const groupName = args.slice(1).join(" ");
-                if (!groupName) return await sock.sendMessage(sender, { text: '❌ Ketik nama grupnya.' }, (msg ? { quoted: msg } : {}));
+            const members = targetGroup.participants;
+            let countRealNumber = 0;
+            let countLID = 0;
+            let countAdminSkipped = 0;
+            let countSelfSkipped = 0;
+            let memberList = "";
 
-                const groups = await sock.groupFetchAllParticipating();
-                let targetGroup = null;
+            // Menyedot Nomor Asli + Kode Rahasia (LID), TANPA admin grup & nomor sendiri
+            members.forEach(mem => {
+                const isAdmin = (mem.admin === 'admin' || mem.admin === 'superadmin');
+                const pureId = mem.id.split(':')[0].split('@')[0];
 
-                for (let id in groups) {
-                    if (groups[id].subject === groupName) {
-                        targetGroup = groups[id];
-                        break;
-                    }
+                if (isAdmin) { countAdminSkipped++; return; }              // Kecualikan admin & owner grup
+                if (pureId === pureOwner) { countSelfSkipped++; return; }  // Kecualikan nomor bot sendiri
+
+                if (mem.id.endsWith('@s.whatsapp.net')) {
+                    memberList += `${mem.id.split('@')[0]}\n`;
+                    countRealNumber++;
+                } else if (mem.id.endsWith('@lid')) {
+                    memberList += `${mem.id}\n`; // MEMUNCULKAN LID
+                    countLID++;
                 }
+            });
 
-                if (!targetGroup) return await sock.sendMessage(sender, { text: `❌ Grup tidak ditemukan.` }, (msg ? { quoted: msg } : {}));
+            let replyText = `*Daftar Nomor Anggota Grup: ${groupName}*\n`;
+            replyText += `Berhasil disedot: ${countRealNumber} nomor asli & ${countLID} ID Rahasia (LID)\n`;
+            replyText += `Dikecualikan: ${countAdminSkipped} admin/owner grup`;
+            if (countSelfSkipped > 0) replyText += ` + ${countSelfSkipped} nomor Anda sendiri`;
+            replyText += `\n\n${memberList}`;
 
-                const members = targetGroup.participants;
-                let countRealNumber = 0;
-                let countLID = 0;
-                let countAdminSkipped = 0;
-                let countSelfSkipped = 0;
-                let memberList = "";
+            await sock.sendMessage(sender, { text: replyText }, (msg ? { quoted: msg } : {}));
+        }
 
-                // Menyedot Nomor Asli + Kode Rahasia (LID), TANPA admin grup & nomor sendiri
-                members.forEach(mem => {
-                    const isAdmin = (mem.admin === 'admin' || mem.admin === 'superadmin');
-                    const pureId = mem.id.split(':')[0].split('@')[0];
+        if (command === '.setwhitelist') {
+            const numbersText = args.slice(1).join(" ");
+            // Memisahkan berdasarkan enter, koma, atau spasi
+            const rawNumbers = numbersText.split(/[\n, ]+/).map(n => n.trim()).filter(n => n.length > 5);
 
-                    if (isAdmin) { countAdminSkipped++; return; }              // Kecualikan admin & owner grup
-                    if (pureId === pureOwner) { countSelfSkipped++; return; }  // Kecualikan nomor bot sendiri
+            if (rawNumbers.length === 0) return await sock.sendMessage(sender, { text: '❌ Format salah.' }, (msg ? { quoted: msg } : {}));
 
-                    if (mem.id.endsWith('@s.whatsapp.net')) {
-                        memberList += `${mem.id.split('@')[0]}\n`;
-                        countRealNumber++;
-                    } else if (mem.id.endsWith('@lid')) {
-                        memberList += `${mem.id}\n`; // MEMUNCULKAN LID
-                        countLID++;
-                    }
-                });
+            // Whitelist baru = sesi kirim baru, riwayat anti-duplikat direset
+            sentHistory = new Set();
 
-                let replyText = `*Daftar Nomor Anggota Grup: ${groupName}*\n`;
-                replyText += `Berhasil disedot: ${countRealNumber} nomor asli & ${countLID} ID Rahasia (LID)\n`;
-                replyText += `Dikecualikan: ${countAdminSkipped} admin/owner grup`;
-                if (countSelfSkipped > 0) replyText += ` + ${countSelfSkipped} nomor Anda sendiri`;
-                replyText += `\n\n${memberList}`;
+            const uniqueTargets = new Set();
+            let duplicateInput = 0;
 
-                await sock.sendMessage(sender, { text: replyText }, (msg ? { quoted: msg } : {}));
+            for (let num of rawNumbers) {
+                let jid;
+                if (num.endsWith('@lid')) {
+                    jid = num; // Jika LID, langsung simpan
+                } else {
+                    let formattedNum = num.replace(/[^0-9]/g, '');
+                    if (formattedNum.startsWith('0')) formattedNum = '62' + formattedNum.substring(1);
+                    jid = formattedNum + '@s.whatsapp.net';
+                }
+                if (uniqueTargets.has(jid)) { duplicateInput++; continue; } // Buang nomor kembar
+                uniqueTargets.add(jid);
             }
 
-            if (command === '.setwhitelist') {
-                const numbersText = args.slice(1).join(" ");
-                // Memisahkan berdasarkan enter, koma, atau spasi
-                const rawNumbers = numbersText.split(/[\n, ]+/).map(n => n.trim()).filter(n => n.length > 5);
+            tempWhitelist = [...uniqueTargets];
 
-                if (rawNumbers.length === 0) return await sock.sendMessage(sender, { text: '❌ Format salah.' }, (msg ? { quoted: msg } : {}));
+            const totalBatch = Math.ceil(tempWhitelist.length / BATCH_SIZE);
+            let wlText = `✅ Berhasil menyimpan *${tempWhitelist.length} target* (termasuk nomor & LID) ke memori.\n`;
+            if (duplicateInput > 0) wlText += `🧹 ${duplicateInput} nomor kembar dibuang otomatis.\n`;
+            wlText += `📦 Akan dikirim dalam *${totalBatch} batch* (@${BATCH_SIZE} nomor).\n`;
+            wlText += `🔄 Riwayat anti-duplikat direset untuk sesi ini.\n\n`;
+            wlText += `Silakan Reply pesan promosi Anda dengan perintah: *.bulk*`;
 
-                // Whitelist baru = sesi kirim baru, riwayat anti-duplikat direset
-                sentHistory = new Set();
+            await sock.sendMessage(sender, { text: wlText }, (msg ? { quoted: msg } : {}));
+        }
 
-                const uniqueTargets = new Set();
-                let duplicateInput = 0;
+        if (command === '.bulk') {
+            if (isBulkRunning) return await sock.sendMessage(sender, { text: '⚠️ Masih ada proses bulk yang berjalan. Tunggu selesai, atau ketik *.stopbulk*.' }, (msg ? { quoted: msg } : {}));
+            if (tempWhitelist.length === 0) return await sock.sendMessage(sender, { text: '❌ Memori kosong!' }, (msg ? { quoted: msg } : {}));
 
-                for (let num of rawNumbers) {
-                    let jid;
-                    if (num.endsWith('@lid')) {
-                        jid = num; // Jika LID, langsung simpan
-                    } else {
-                        let formattedNum = num.replace(/[^0-9]/g, '');
-                        if (formattedNum.startsWith('0')) formattedNum = '62' + formattedNum.substring(1);
-                        jid = formattedNum + '@s.whatsapp.net';
-                    }
-                    if (uniqueTargets.has(jid)) { duplicateInput++; continue; } // Buang nomor kembar
-                    uniqueTargets.add(jid);
+            // Isi yang dikirim diambil dari pesan yang Anda reply
+            const isReply = extendedMessage && extendedMessage.contextInfo && extendedMessage.contextInfo.stanzaId;
+            if (!isReply) return await sock.sendMessage(sender, { text: '❌ Anda harus me-reply pesan!' }, (msg ? { quoted: msg } : {}));
+
+            const quotedContext = extendedMessage.contextInfo;
+            const isiKiriman = {
+                forward: {
+                    key: {
+                        remoteJid: sender,
+                        id: quotedContext.stanzaId,
+                        participant: quotedContext.participant
+                    },
+                    message: quotedContext.quotedMessage
                 }
+            };
 
-                tempWhitelist = [...uniqueTargets];
-
-                const totalBatch = Math.ceil(tempWhitelist.length / BATCH_SIZE);
-                let wlText = `✅ Berhasil menyimpan *${tempWhitelist.length} target* (termasuk nomor & LID) ke memori.\n`;
-                if (duplicateInput > 0) wlText += `🧹 ${duplicateInput} nomor kembar dibuang otomatis.\n`;
-                wlText += `📦 Akan dikirim dalam *${totalBatch} batch* (@${BATCH_SIZE} nomor).\n`;
-                wlText += `🔄 Riwayat anti-duplikat direset untuk sesi ini.\n\n`;
-                wlText += `Silakan Reply pesan promosi Anda dengan perintah: *.bulk*`;
-
-                await sock.sendMessage(sender, { text: wlText }, (msg ? { quoted: msg } : {}));
+            // Saring nomor yang SUDAH pernah dikirimi pada whitelist ini (anti duplicate send)
+            const targets = [];
+            let skippedDuplicate = 0;
+            for (let jid of tempWhitelist) {
+                if (sentHistory.has(jid)) { skippedDuplicate++; continue; }
+                targets.push(jid);
             }
 
-            if (command === '.bulk') {
-                if (isBulkRunning) return await sock.sendMessage(sender, { text: '⚠️ Masih ada proses bulk yang berjalan. Tunggu selesai, atau ketik *.stopbulk*.' }, (msg ? { quoted: msg } : {}));
-                if (tempWhitelist.length === 0) return await sock.sendMessage(sender, { text: '❌ Memori kosong!' }, (msg ? { quoted: msg } : {}));
+            // Whitelist langsung dikosongkan: mau kirim lagi berarti harus .setwhitelist ulang
+            tempWhitelist = [];
 
-                // Isi yang dikirim diambil dari pesan yang Anda reply
-                const isReply = extendedMessage && extendedMessage.contextInfo && extendedMessage.contextInfo.stanzaId;
-                if (!isReply) return await sock.sendMessage(sender, { text: '❌ Anda harus me-reply pesan!' }, (msg ? { quoted: msg } : {}));
+            if (targets.length === 0) {
+                return await sock.sendMessage(sender, { text: `❌ Semua nomor di memori sudah pernah dikirimi pesan pada sesi ini.\n\nBuat whitelist baru dengan *.setwhitelist* jika ingin mengirim ulang.` }, (msg ? { quoted: msg } : {}));
+            }
 
-                const quotedContext = extendedMessage.contextInfo;
-                const isiKiriman = {
-                    forward: {
-                        key: {
-                            remoteJid: sender,
-                            id: quotedContext.stanzaId,
-                            participant: quotedContext.participant
-                        },
-                        message: quotedContext.quotedMessage
-                    }
-                };
+            isBulkRunning = true;
 
-                // Saring nomor yang SUDAH pernah dikirimi pada whitelist ini (anti duplicate send)
-                const targets = [];
-                let skippedDuplicate = 0;
-                for (let jid of tempWhitelist) {
-                    if (sentHistory.has(jid)) { skippedDuplicate++; continue; }
-                    targets.push(jid);
-                }
+            const totalBatch = Math.ceil(targets.length / BATCH_SIZE);
+            const avgMsgSec = (MIN_MSG_DELAY_SEC + MAX_MSG_DELAY_SEC) / 2;
+            const avgBatchMin = (MIN_BATCH_DELAY_MIN + MAX_BATCH_DELAY_MIN) / 2;
+            const estimasi = Math.round(
+                ((targets.length - totalBatch) * avgMsgSec) / 60 + (totalBatch - 1) * avgBatchMin
+            );
 
-                // Whitelist langsung dikosongkan: mau kirim lagi berarti harus .setwhitelist ulang
-                tempWhitelist = [];
+            let startText = `⏳ Memulai Forward pesan ke ${targets.length} target.\n`;
+            if (skippedDuplicate > 0) startText += `🚫 ${skippedDuplicate} nomor dilewati (sudah pernah dikirimi).\n`;
+            startText += `📦 Dibagi ${totalBatch} batch @${BATCH_SIZE} nomor.\n`;
+            startText += `⏱️ Jeda antar nomor: ${MIN_MSG_DELAY_SEC}-${MAX_MSG_DELAY_SEC} detik.\n`;
+            startText += `😴 Jeda antar batch: ${MIN_BATCH_DELAY_MIN}-${MAX_BATCH_DELAY_MIN} menit.\n`;
+            startText += `Estimasi selesai: ± ${estimasi} menit.\n\nKetik *.stopbulk* untuk menghentikan.`;
+            await sock.sendMessage(sender, { text: startText }, (msg ? { quoted: msg } : {}));
 
-                if (targets.length === 0) {
-                    return await sock.sendMessage(sender, { text: `❌ Semua nomor di memori sudah pernah dikirimi pesan pada sesi ini.\n\nBuat whitelist baru dengan *.setwhitelist* jika ingin mengirim ulang.` }, (msg ? { quoted: msg } : {}));
-                }
+            let successCount = 0;
+            let failCount = 0;
+            let stopped = false;
 
-                isBulkRunning = true;
+            for (let b = 0; b < totalBatch; b++) {
+                if (!isBulkRunning) { stopped = true; break; }
 
-                const totalBatch = Math.ceil(targets.length / BATCH_SIZE);
-                const avgMsgSec = (MIN_MSG_DELAY_SEC + MAX_MSG_DELAY_SEC) / 2;
-                const avgBatchMin = (MIN_BATCH_DELAY_MIN + MAX_BATCH_DELAY_MIN) / 2;
-                const estimasi = Math.round(
-                    ((targets.length - totalBatch) * avgMsgSec) / 60 + (totalBatch - 1) * avgBatchMin
+                const batch = targets.slice(b * BATCH_SIZE, (b + 1) * BATCH_SIZE);
+                console.log(`\n📦 === BATCH ${b + 1}/${totalBatch} (${batch.length} nomor) ===`);
+
+                // LAPOR KE OWNER: batch akan dijalankan
+                const batchStart = new Date().toLocaleTimeString('id-ID');
+                let daftarTarget = batch.map((jid, idx) => `${idx + 1}. ${jid.split('@')[0]}`).join('\n');
+                await reportOwner(
+                    `▶️ *BATCH ${b + 1}/${totalBatch} AKAN DIJALANKAN*\n` +
+                    `🕐 Mulai: ${batchStart}\n` +
+                    `👥 Jumlah target: ${batch.length} nomor\n` +
+                    `⏱️ Jeda antar nomor: ${MIN_MSG_DELAY_SEC}-${MAX_MSG_DELAY_SEC} detik\n\n` +
+                    `*Daftar target:*\n${daftarTarget}`
                 );
 
-                let startText = `⏳ Memulai Forward pesan ke ${targets.length} target.\n`;
-                if (skippedDuplicate > 0) startText += `🚫 ${skippedDuplicate} nomor dilewati (sudah pernah dikirimi).\n`;
-                startText += `📦 Dibagi ${totalBatch} batch @${BATCH_SIZE} nomor.\n`;
-                startText += `⏱️ Jeda antar nomor: ${MIN_MSG_DELAY_SEC}-${MAX_MSG_DELAY_SEC} detik.\n`;
-                startText += `😴 Jeda antar batch: ${MIN_BATCH_DELAY_MIN}-${MAX_BATCH_DELAY_MIN} menit.\n`;
-                startText += `Estimasi selesai: ± ${estimasi} menit.\n\nKetik *.stopbulk* untuk menghentikan.`;
-                await sock.sendMessage(sender, { text: startText }, (msg ? { quoted: msg } : {}));
+                let batchSuccess = 0;
+                let batchFail = 0;
 
-                let successCount = 0;
-                let failCount = 0;
-                let stopped = false;
-
-                for (let b = 0; b < totalBatch; b++) {
+                for (let i = 0; i < batch.length; i++) {
                     if (!isBulkRunning) { stopped = true; break; }
 
-                    const batch = targets.slice(b * BATCH_SIZE, (b + 1) * BATCH_SIZE);
-                    console.log(`\n📦 === BATCH ${b + 1}/${totalBatch} (${batch.length} nomor) ===`);
-
-                    // LAPOR KE OWNER: batch akan dijalankan
-                    const batchStart = new Date().toLocaleTimeString('id-ID');
-                    let daftarTarget = batch.map((jid, idx) => `${idx + 1}. ${jid.split('@')[0]}`).join('\n');
-                    await reportOwner(
-                        `▶️ *BATCH ${b + 1}/${totalBatch} AKAN DIJALANKAN*\n` +
-                        `🕐 Mulai: ${batchStart}\n` +
-                        `👥 Jumlah target: ${batch.length} nomor\n` +
-                        `⏱️ Jeda antar nomor: ${MIN_MSG_DELAY_SEC}-${MAX_MSG_DELAY_SEC} detik\n\n` +
-                        `*Daftar target:*\n${daftarTarget}`
-                    );
-
-                    let batchSuccess = 0;
-                    let batchFail = 0;
-
-                    for (let i = 0; i < batch.length; i++) {
-                        if (!isBulkRunning) { stopped = true; break; }
-
-                        const targetJid = batch[i];
-                        try {
-                            await sock.sendMessage(targetJid, isiKiriman);
-                            sentHistory.add(targetJid); // Tandai supaya tidak dikirimi lagi
-                            successCount++;
-                            batchSuccess++;
-                            console.log(`   [B${b + 1}] ✅ Terkirim ke ${targetJid}`);
-                        } catch (err) {
-                            failCount++;
-                            batchFail++;
-                            console.log(`   [B${b + 1}] ❌ Gagal kirim ke ${targetJid}`);
-                        }
-
-                        // Jeda acak antar nomor di dalam batch (nomor terakhir batch tidak perlu)
-                        if (i < batch.length - 1 && isBulkRunning) {
-                            const delay = randomMsgDelayMs();
-                            console.log(`   ⏱️  Jeda ${Math.round(delay / 1000)} detik...`);
-                            await sleep(delay);
-                        }
+                    const targetJid = batch[i];
+                    try {
+                        await sock.sendMessage(targetJid, isiKiriman);
+                        sentHistory.add(targetJid); // Tandai supaya tidak dikirimi lagi
+                        successCount++;
+                        batchSuccess++;
+                        console.log(`   [B${b + 1}] ✅ Terkirim ke ${targetJid}`);
+                    } catch (err) {
+                        failCount++;
+                        batchFail++;
+                        console.log(`   [B${b + 1}] ❌ Gagal kirim ke ${targetJid}`);
                     }
 
-                    const isLastBatch = (b === totalBatch - 1);
-                    const willStop = stopped || !isBulkRunning;
-                    const batchDelay = (!willStop && !isLastBatch) ? randomBatchDelayMs() : 0;
-
-                    // LAPOR KE OWNER: batch selesai dijalankan
-                    let doneText = `${willStop ? '🛑' : '✅'} *BATCH ${b + 1}/${totalBatch} SELESAI*\n`;
-                    doneText += `🕐 Selesai: ${new Date().toLocaleTimeString('id-ID')}\n`;
-                    doneText += `✅ Berhasil: ${batchSuccess} | ❌ Gagal: ${batchFail}\n`;
-                    doneText += `📊 Total keseluruhan: ${successCount}/${targets.length} terkirim\n`;
-                    if (willStop) {
-                        doneText += `\n🛑 Proses dihentikan oleh perintah *.stopbulk*.`;
-                    } else if (isLastBatch) {
-                        doneText += `\n🎉 Ini batch terakhir.`;
-                    } else {
-                        doneText += `\n😴 Istirahat ${formatDuration(batchDelay)} sebelum *Batch ${b + 2}/${totalBatch}*.`;
-                    }
-                    await reportOwner(doneText);
-
-                    if (willStop) { stopped = true; break; }
-
-                    // Jeda acak antar batch (batch terakhir tidak perlu)
-                    if (!isLastBatch) {
-                        console.log(`😴 Batch ${b + 1} selesai. Istirahat ${formatDuration(batchDelay)}...`);
-                        await sleep(batchDelay);
+                    // Jeda acak antar nomor di dalam batch (nomor terakhir batch tidak perlu)
+                    if (i < batch.length - 1 && isBulkRunning) {
+                        const delay = randomMsgDelayMs();
+                        console.log(`   ⏱️  Jeda ${Math.round(delay / 1000)} detik...`);
+                        await sleep(delay);
                     }
                 }
 
-                if (stopped) {
-                    await reportOwner(`🛑 *BULK DIHENTIKAN*\nBerhasil: ${successCount} | Gagal: ${failCount} | Sisa: ${targets.length - successCount - failCount} target.\n\nBuat whitelist baru (*.setwhitelist*) untuk melanjutkan — nomor yang sudah terkirim otomatis dilewati.`);
+                const isLastBatch = (b === totalBatch - 1);
+                const willStop = stopped || !isBulkRunning;
+                const batchDelay = (!willStop && !isLastBatch) ? randomBatchDelayMs() : 0;
+
+                // LAPOR KE OWNER: batch selesai dijalankan
+                let doneText = `${willStop ? '🛑' : '✅'} *BATCH ${b + 1}/${totalBatch} SELESAI*\n`;
+                doneText += `🕐 Selesai: ${new Date().toLocaleTimeString('id-ID')}\n`;
+                doneText += `✅ Berhasil: ${batchSuccess} | ❌ Gagal: ${batchFail}\n`;
+                doneText += `📊 Total keseluruhan: ${successCount}/${targets.length} terkirim\n`;
+                if (willStop) {
+                    doneText += `\n🛑 Proses dihentikan oleh perintah *.stopbulk*.`;
+                } else if (isLastBatch) {
+                    doneText += `\n🎉 Ini batch terakhir.`;
                 } else {
-                    await reportOwner(`🎉 *SEMUA BATCH SELESAI*\n${totalBatch} batch tuntas.\n✅ Berhasil: ${successCount} target\n❌ Gagal: ${failCount} target\n🕐 Selesai: ${new Date().toLocaleTimeString('id-ID')}\n\nMemori sudah dikosongkan. Untuk kirim lagi, buat whitelist baru dengan *.setwhitelist*.`);
+                    doneText += `\n😴 Istirahat ${formatDuration(batchDelay)} sebelum *Batch ${b + 2}/${totalBatch}*.`;
                 }
-                isBulkRunning = false;
+                await reportOwner(doneText);
+
+                if (willStop) { stopped = true; break; }
+
+                // Jeda acak antar batch (batch terakhir tidak perlu)
+                if (!isLastBatch) {
+                    console.log(`😴 Batch ${b + 1} selesai. Istirahat ${formatDuration(batchDelay)}...`);
+                    await sleep(batchDelay);
+                }
             }
 
-            if (command === '.stopbulk') {
-                if (!isBulkRunning) return await sock.sendMessage(sender, { text: 'ℹ️ Tidak ada proses bulk yang berjalan.' }, (msg ? { quoted: msg } : {}));
-                isBulkRunning = false;
-                await sock.sendMessage(sender, { text: '🛑 Perintah berhenti diterima. Bulk akan berhenti setelah jeda yang sedang berjalan selesai.' }, (msg ? { quoted: msg } : {}));
+            if (stopped) {
+                await reportOwner(`🛑 *BULK DIHENTIKAN*\nBerhasil: ${successCount} | Gagal: ${failCount} | Sisa: ${targets.length - successCount - failCount} target.\n\nBuat whitelist baru (*.setwhitelist*) untuk melanjutkan — nomor yang sudah terkirim otomatis dilewati.`);
+            } else {
+                await reportOwner(`🎉 *SEMUA BATCH SELESAI*\n${totalBatch} batch tuntas.\n✅ Berhasil: ${successCount} target\n❌ Gagal: ${failCount} target\n🕐 Selesai: ${new Date().toLocaleTimeString('id-ID')}\n\nMemori sudah dikosongkan. Untuk kirim lagi, buat whitelist baru dengan *.setwhitelist*.`);
             }
+            isBulkRunning = false;
+        }
 
-            if (command === '.status') {
-                const upSec = Math.floor(process.uptime());
-                const jam = Math.floor(upSec / 3600);
-                const menit = Math.floor((upSec % 3600) / 60);
+        if (command === '.stopbulk') {
+            if (!isBulkRunning) return await sock.sendMessage(sender, { text: 'ℹ️ Tidak ada proses bulk yang berjalan.' }, (msg ? { quoted: msg } : {}));
+            isBulkRunning = false;
+            await sock.sendMessage(sender, { text: '🛑 Perintah berhenti diterima. Bulk akan berhenti setelah jeda yang sedang berjalan selesai.' }, (msg ? { quoted: msg } : {}));
+        }
 
-                let statusText = `📊 *STATUS ${BOT_NAME.toUpperCase()}*\n`;
-                statusText += `🔑 Kode bot: *${BOT_CODE}* | 📁 ${AUTH_FOLDER}\n\n`;
-                statusText += `🟢 Aktif: ${jam} jam ${menit} menit\n`;
-                statusText += `📋 Whitelist di memori: ${tempWhitelist.length} nomor\n`;
-                statusText += `📨 Sudah dikirimi (sesi ini): ${sentHistory.size} nomor\n`;
-                statusText += `⚙️ Bulk berjalan: ${isBulkRunning ? 'YA' : 'tidak'}\n`;
-                statusText += `🔇 Log enkripsi diredam: ${decryptErrorCount}x`;
-                if (lastDecryptError) statusText += `\n🕐 Terakhir: ${lastDecryptError}`;
-                statusText += `\n\n_Log enkripsi yang diredam itu normal dan sembuh sendiri._`;
+        if (command === '.status') {
+            const upSec = Math.floor(process.uptime());
+            const jam = Math.floor(upSec / 3600);
+            const menit = Math.floor((upSec % 3600) / 60);
 
-                await sock.sendMessage(sender, { text: statusText }, (msg ? { quoted: msg } : {}));
-            }
+            let statusText = `📊 *STATUS ${BOT_NAME.toUpperCase()}*\n`;
+            statusText += `📁 ${AUTH_FOLDER}\n\n`;
+            statusText += `🟢 Aktif: ${jam} jam ${menit} menit\n`;
+            statusText += `📋 Whitelist di memori: ${tempWhitelist.length} nomor\n`;
+            statusText += `📨 Sudah dikirimi (sesi ini): ${sentHistory.size} nomor\n`;
+            statusText += `⚙️ Bulk berjalan: ${isBulkRunning ? 'YA' : 'tidak'}\n`;
+            statusText += `🔇 Log enkripsi diredam: ${decryptErrorCount}x`;
+            if (lastDecryptError) statusText += `\n🕐 Terakhir: ${lastDecryptError}`;
+            statusText += `\n\n_Log enkripsi yang diredam itu normal dan sembuh sendiri._`;
+
+            await sock.sendMessage(sender, { text: statusText }, (msg ? { quoted: msg } : {}));
+        }
     };
 }
 
