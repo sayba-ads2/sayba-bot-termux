@@ -107,10 +107,27 @@ try { qrImage = require('qrcode'); } catch (e) { /* opsional */ }
 // Identitas Anda sebagai owner. Boleh lebih dari satu.
 // Kalau bot tidak merespons, ketik .ceklid di chat bot tersebut,
 // lalu tambahkan angka yang muncul ke daftar ini.
-const OWNER_IDS = [
-    '268697650352299',    // LID owner
-    '6287803445749'       // nomor telepon owner  <-- dipakai untuk membalas
+// Tiap owner ditulis berpasangan: LID dan nomor teleponnya.
+// Nomor telepon dipakai sebagai alamat balasan, karena alamat @lid
+// sering tidak bisa dibuka HP setelah bot login ulang.
+// Cek LID/nomor Anda dengan mengetik .ceklid di chat bot.
+const DAFTAR_OWNER = [
+    { lid: '268697650352299', nomor: '6287803445749' },
+    { lid: '20706725200037',  nomor: '6287792634063' }
 ];
+
+// Semua identitas owner digabung jadi satu daftar untuk pengecekan
+const OWNER_IDS = DAFTAR_OWNER
+    .flatMap(o => [o.lid, o.nomor])
+    .map(x => String(x || '').replace(/[^0-9]/g, ''))
+    .filter(Boolean);
+
+// Cari nomor telepon milik owner berdasarkan identitas apa pun miliknya
+const nomorOwnerDari = (id) => {
+    const bersih = String(id || '').replace(/[^0-9]/g, '');
+    const ketemu = DAFTAR_OWNER.find(o => o.lid === bersih || o.nomor === bersih);
+    return ketemu ? ketemu.nomor : null;
+};
 
 // Daftar bot. Tambah bot baru cukup menyalin satu blok.
 const DAFTAR_BOT = {
@@ -496,9 +513,13 @@ ${text}` });
         let alamatBalas = sender;
         let pakaiQuote = msg;
 
-        if (isOwner && sender.endsWith('@lid') && ownerNomor) {
-            alamatBalas = `${ownerNomor}@s.whatsapp.net`;
-            pakaiQuote = null;   // pesan aslinya ada di chat lain
+        if (isOwner && sender.endsWith('@lid')) {
+            // Cari nomor telepon milik owner INI, bukan owner pertama
+            const nomorDia = idPengirim.map(nomorOwnerDari).find(Boolean);
+            if (nomorDia) {
+                alamatBalas = `${nomorDia}@s.whatsapp.net`;
+                pakaiQuote = null;   // pesan aslinya ada di chat lain
+            }
         }
 
         let text = "";
@@ -530,8 +551,27 @@ ${text}` });
         // Di grup perintah diabaikan, supaya kalau beberapa bot ada di grup
         // yang sama tidak ada dua bot menjawab pertanyaan yang sama.
         // ==========================================
-        const command = rawCommand;
+        // ==========================================
+        // KODE BOT DI BELAKANG PERINTAH
+        // .status1 -> hanya dikerjakan bot 1
+        // .status2 -> hanya dikerjakan bot 2
+        // .status  -> dikerjakan bot mana pun yang menerimanya
+        // ==========================================
+        const cocokKode = rawCommand.match(/^(\.?[a-z]+?)([0-9]+)$/);
+        let command = rawCommand;
+        let kodeDiminta = null;
+
+        if (cocokKode && DAFTAR_BOT[cocokKode[2]]) {
+            command = cocokKode[1];
+            kodeDiminta = cocokKode[2];
+        }
+
         const isKnownCommand = command.startsWith('.') || ['info', 'link', 'sayba'].includes(command);
+
+        if (isKnownCommand && kodeDiminta && kodeDiminta !== BOT_CODE) {
+            _origLog(`   ⏭️ "${rawCommand}" untuk bot ${kodeDiminta}, bukan bot ${BOT_CODE}. Dilewati.`);
+            return;
+        }
 
         // Perintah di grup hanya dilayani kalau nama grupnya terdaftar
         // pada "grup" milik bot ini di DAFTAR_BOT.
