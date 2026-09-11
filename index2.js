@@ -233,7 +233,27 @@ const formatDuration = (ms) => {
 
 let qrWatcher = null;     // Pemantau QR bot lain (dibuat sekali saja)
 
+// ==========================================================
+// PENGAMAN LOOP PAIRING
+// Kalau koneksi terus terputus SEBELUM berhasil login, jangan minta
+// kode baru tiap kali dan jangan langsung sambung ulang — permintaan
+// kode yang bertubi-tubi bisa membuat WhatsApp menahan/menolak semua
+// kodenya, sehingga tidak ada satu pun kode yang sempat berhasil
+// dipakai. Variabel ini di luar startBot() supaya nilainya bertahan
+// tiap kali startBot() memanggil dirinya sendiri untuk sambung ulang.
+// ==========================================================
+let waktuKodeTerakhir = 0;
+let percobaanBerturutTurut = 0;
+const BATAS_PERCOBAAN = 4;
+const JEDA_KODE_MIN_MS = 45000;
+let berhentiOtomatis = false;
+
 async function startBot() {
+    if (berhentiOtomatis) {
+        _origLog(`⛔ [${BOT_CODE}] Tidak mencoba sambung otomatis lagi. Restart manual bot ini untuk mencoba ulang.`);
+        return;
+    }
+
     const { state, saveCreds } = await useMultiFileAuthState(AUTH_FOLDER);
 
     const usePairingCode = Boolean(BOT_NUMBER) && !state.creds.registered;
@@ -270,6 +290,7 @@ async function startBot() {
             try {
                 const code = await sock.requestPairingCode(BOT_NUMBER);
                 const rapi = code.match(/.{1,4}/g).join('-');
+                waktuKodeTerakhir = Date.now();
                 _origLog('\n==========================================');
                 _origLog(`🔗 KODE PAIRING ${BOT_TAG}`);
                 _origLog(`📱 Nomor  : ${BOT_NUMBER}`);
@@ -287,7 +308,17 @@ async function startBot() {
                 }
             }
         };
-        setTimeout(() => mintaKode(), 5000);
+
+        // Jangan minta kode baru kalau kode sebelumnya baru saja diberikan —
+        // ini yang tadinya membuat bot minta kode berkali-kali dalam
+        // hitungan detik setiap koneksi terputus-sambung, sampai WhatsApp
+        // ikut menahan/menolak kodenya.
+        const sisaJeda = JEDA_KODE_MIN_MS - (Date.now() - waktuKodeTerakhir);
+        if (sisaJeda > 0) {
+            _origLog(`⏳ [${BOT_CODE}] Kode pairing sebelumnya masih berlaku (~${Math.ceil(sisaJeda / 1000)} detik lagi). Tidak minta kode baru dulu.`);
+        } else {
+            setTimeout(() => mintaKode(), 5000);
+        }
     }
 
     sock.ev.on('connection.update', async (update) => {
@@ -313,8 +344,34 @@ async function startBot() {
 
         if(connection === 'close') {
             const shouldReconnect = lastDisconnect.error?.output?.statusCode !== DisconnectReason.loggedOut;
-            if(shouldReconnect) startBot();
+
+            if (!shouldReconnect) return; // logged out, tidak perlu sambung ulang
+
+            if (!state.creds.registered) {
+                // Belum pernah berhasil login — jangan langsung sambung ulang
+                // tanpa jeda, supaya tidak jadi badai permintaan ke WhatsApp.
+                percobaanBerturutTurut++;
+
+                if (percobaanBerturutTurut >= BATAS_PERCOBAAN) {
+                    berhentiOtomatis = true;
+                    _origLog('==========================================');
+                    _origLog(`❌ [${BOT_CODE}] Koneksi terputus ${percobaanBerturutTurut}x berturut-turut sebelum berhasil login.`);
+                    _origLog('   WhatsApp kemungkinan menahan percobaan pairing yang terlalu sering.');
+                    _origLog('   Bot BERHENTI mencoba otomatis.');
+                    _origLog('   Tunggu 15 menit, lalu jalankan ulang bot ini (pm2 list untuk lihat namanya,');
+                    _origLog('   lalu: pm2 restart <nama>).');
+                    _origLog('==========================================');
+                    return;
+                }
+
+                _origLog(`🔁 [${BOT_CODE}] Sambung ulang dalam 5 detik... (percobaan ${percobaanBerturutTurut}/${BATAS_PERCOBAAN})`);
+                setTimeout(() => startBot(), 5000);
+                return;
+            }
+
+            startBot();
         } else if(connection === 'open') {
+            percobaanBerturutTurut = 0; // koneksi berhasil, hitungan direset
             console.log(`✅ ${BOT_TAG} berhasil terhubung ke WhatsApp!`);
 
             // Bukti bot ini tertaut ke akun yang mana
