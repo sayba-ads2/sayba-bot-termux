@@ -2,10 +2,12 @@
   "name": "sayba-bot-termux",
   "version": "1.0.0",
   "description": "Bot WhatsApp Sayba - multi nomor, kirim batch, laporan ke owner",
-  "main": "index.js",
+  "main": "index1.js",
   "private": true,
   "scripts": {
-    "start": "node index.js"
+    "start": "node index1.js",
+    "start:bot1": "node index1.js",
+    "start:bot2": "node index2.js"
   },
   "dependencies": {
     "@whiskeysockets/baileys": "^6.7.9",
