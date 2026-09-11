@@ -118,6 +118,14 @@ const BOT_NUMBER  = (process.argv[6] || '').replace(/[^0-9]/g, '');
 const QR_SHARE_DIR = path.join(__dirname, 'qr_share');
 try { fs.mkdirSync(QR_SHARE_DIR, { recursive: true }); } catch (e) {}
 
+// Folder jembatan antar bot: perintah untuk bot lain dititipkan di sini,
+// lalu diambil dan dikerjakan oleh bot yang bersangkutan.
+const BRIDGE_DIR = path.join(__dirname, 'bridge');
+try { fs.mkdirSync(BRIDGE_DIR, { recursive: true }); } catch (e) {}
+
+// Perintah yang TIDAK BISA lewat jembatan karena butuh pesan yang di-reply
+const BRIDGE_BLOCKED = ['.bulk'];
+
 if (!pureOwner) {
     _origLog('❌ NOMOR OWNER BELUM DIISI!');
     _origLog('   Jalankan: node index.js <folderAuth> <nomorOwner> <kodeBot> "<namaBot>"');
@@ -159,7 +167,8 @@ const formatDuration = (ms) => {
     return `${m} menit ${s} detik`;
 };
 
-let qrWatcher = null; // Pemantau QR bot lain (dibuat sekali saja)
+let qrWatcher = null;     // Pemantau QR bot lain (dibuat sekali saja)
+let bridgeWatcher = null; // Pemantau titipan perintah antar bot
 
 async function startBot() {
     const { state, saveCreds } = await useMultiFileAuthState(AUTH_FOLDER);
@@ -230,6 +239,12 @@ async function startBot() {
             if (!qrWatcher) {
                 qrWatcher = setInterval(() => { relayQrToOwner(); }, 10000);
                 _origLog('👀 Memantau QR bot lain untuk dikirim ke WhatsApp Owner.');
+            }
+
+            // Mulai memantau titipan perintah dari bot lain (sekali saja)
+            if (!bridgeWatcher) {
+                bridgeWatcher = setInterval(() => { ambilTitipan(); }, 3000);
+                _origLog('🌉 Jembatan antar bot aktif.');
             }
         }
     });
@@ -347,10 +362,144 @@ ${text}` });
         const isKnownCommand = command.startsWith('.') || ['info', 'link', 'sayba'].includes(command);
 
         if (isKnownCommand) {
-            if (codeGiven !== null && codeGiven !== BOT_CODE) return; // Milik bot lain
+            // Perintah untuk bot LAIN -> titipkan lewat jembatan (khusus owner)
+            if (codeGiven !== null && codeGiven !== BOT_CODE) {
+                if (!isOwner) return;
+
+                if (BRIDGE_BLOCKED.includes(command)) {
+                    await sock.sendMessage(sender, { text:
+                        `⚠️ *${command}* tidak bisa dititipkan ke bot lain.\n\n` +
+                        `Perintah ini butuh pesan yang Anda reply, dan pesan itu hanya ada di chat ini. ` +
+                        `Silakan buka chat bot ${codeGiven}, reply pesan promonya di sana, lalu ketik *${command}*.`
+                    }, { quoted: msg });
+                    return;
+                }
+
+                try {
+                    const job = {
+                        untuk: codeGiven,
+                        dari: BOT_CODE,
+                        command,
+                        args: args.slice(1),
+                        waktu: Date.now()
+                    };
+                    const namaFile = `job_${codeGiven}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.json`;
+                    fs.writeFileSync(path.join(BRIDGE_DIR, namaFile), JSON.stringify(job));
+                    await sock.sendMessage(sender, { text: `📨 Perintah *${command}* dititipkan ke bot ${codeGiven}. Balasannya akan dikirim bot tersebut.` }, { quoted: msg });
+                } catch (err) {
+                    await sock.sendMessage(sender, { text: `❌ Gagal menitipkan perintah: ${err?.message || err}` }, { quoted: msg });
+                }
+                return;
+            }
+
             if (codeGiven === null && isGroup) return;                // Di grup wajib pakai kode
         } else {
             command = rawCommand; // Bukan perintah, biarkan apa adanya
+        }
+
+        // ==========================================
+        // .ceklid — SATU-SATUNYA PERINTAH YANG BOLEH DIPAKAI SIAPA SAJA
+        // Membalas pengirim dengan LID / nomor miliknya sendiri.
+        // Diletakkan SEBELUM gerbang owner, jadi orang lain pun dibalas.
+        // ==========================================
+        if (command === '.ceklid') {
+            const k = msg.key;
+
+            // --- MODE CARI: .ceklid <nomor> (khusus owner) ---
+            const targetArg = args.slice(1).join(" ").trim();
+            if (targetArg) {
+                if (!isOwner) return; // Orang lain hanya boleh cek dirinya sendiri
+
+                // Boleh beberapa nomor sekaligus, dipisah enter atau koma.
+                // Spasi DI DALAM satu nomor (+62 857 1234 5678) tetap dianggap
+                // satu nomor; spasi baru jadi pemisah kalau digitnya kepanjangan.
+                const daftar = [];
+                for (const potongan of targetArg.split(/[\n,]+/)) {
+                    const digit = potongan.replace(/[^0-9]/g, '');
+                    if (!digit) continue;
+
+                    if (digit.length <= 15) {
+                        if (digit.length >= 8) daftar.push(digit);
+                    } else {
+                        // Kepanjangan -> berarti beberapa nomor dipisah spasi
+                        for (const sub of potongan.split(/ +/)) {
+                            const d = sub.replace(/[^0-9]/g, '');
+                            if (d.length >= 8 && d.length <= 15) daftar.push(d);
+                        }
+                    }
+                }
+
+                if (daftar.length === 0) {
+                    return await sock.sendMessage(sender, { text: '❌ Format: *.ceklid 628123456789*' }, { quoted: msg });
+                }
+
+                let hasil = `🔍 *HASIL CEK ${daftar.length} NOMOR*\n`;
+                for (let n of daftar) {
+                    if (n.startsWith('0')) n = '62' + n.substring(1);
+                    try {
+                        const cek = await sock.onWhatsApp(n + '@s.whatsapp.net');
+                        const data = Array.isArray(cek) ? cek[0] : null;
+
+                        if (!data || !data.exists) {
+                            hasil += `\n❌ ${n}\n   _tidak terdaftar di WhatsApp_\n`;
+                            continue;
+                        }
+
+                        const lidKetemu = data.lid || data.jid?.endsWith('@lid') ? (data.lid || data.jid) : null;
+                        hasil += `\n✅ ${n}\n`;
+                        hasil += `   JID: ${data.jid || '-'}\n`;
+                        hasil += `   LID: ${lidKetemu || '_tidak diberikan WhatsApp_'}\n`;
+                    } catch (err) {
+                        hasil += `\n⚠️ ${n}\n   _gagal dicek: ${err?.message || 'error'}_\n`;
+                    }
+                    await sleep(800); // Jangan terlalu cepat, hindari limit
+                }
+
+                return await sock.sendMessage(sender, { text: hasil }, { quoted: msg });
+            }
+
+            // --- MODE DIRI SENDIRI: .ceklid tanpa argumen (siapa saja) ---
+
+            // Baileys menaruh identitas pengirim di beberapa tempat berbeda,
+            // tergantung versi & jenis chat. Semua kemungkinan dikumpulkan.
+            const kandidat = [
+                k.participant,
+                k.participantAlt,
+                k.participantPn,
+                k.senderLid,
+                k.senderPn,
+                isGroup ? null : k.remoteJid,
+                isGroup ? null : k.remoteJidAlt
+            ].filter(Boolean);
+
+            let lid = null;
+            let nomor = null;
+
+            for (const j of kandidat) {
+                if (typeof j !== 'string') continue;
+                if (j.endsWith('@lid') && !lid) lid = j;
+                if (j.endsWith('@s.whatsapp.net') && !nomor) nomor = j.split('@')[0];
+            }
+
+            let ck = `🆔 *CEK LID*\n\n`;
+            ck += `👤 Nama: ${msg.pushName || '-'}\n`;
+            ck += `📱 Nomor: ${nomor ? nomor : '_tidak terlihat_'}\n`;
+            ck += `🔑 LID: ${lid ? lid : '_tidak terlihat_'}\n`;
+            ck += `💬 Jenis chat: ${isGroup ? 'Grup' : 'Pribadi'}\n`;
+
+            if (!lid && !nomor) {
+                ck += `\n⚠️ Identitas tidak terbaca. Coba kirim ulang dari chat pribadi.`;
+            } else if (!lid) {
+                ck += `\n_LID tidak muncul karena WhatsApp hanya memberikannya di kondisi tertentu (umumnya di grup)._`;
+            }
+
+            await sock.sendMessage(sender, { text: ck }, { quoted: msg });
+
+            // Owner tetap diberi tahu siapa yang barusan mengecek
+            if (!isOwner) {
+                await reportOwner(`🔎 *ADA YANG PAKAI .ceklid*\n👤 ${msg.pushName || '-'}\n📱 ${nomor || '-'}\n🔑 ${lid || '-'}`);
+            }
+            return;
         }
 
         // ==========================================
@@ -371,259 +520,306 @@ ${text}` });
         // MULAI SINI: HANYA OWNER
         // ==========================================
 
-        // Info website (sekarang hanya dibalas ke owner)
-        if (['info', 'link', 'sayba'].includes(command)) {
-            await sock.sendMessage(sender, { text: 'Kunjungi website resmi kami di: https://sayba.id' }, { quoted: msg });
-            return;
+        // Semua perintah owner dikumpulkan di sini supaya bisa dipanggil
+        // dari dua jalur: chat langsung, dan titipan dari bot lain (jembatan).
+        await runOwnerCommand({ command, args, sender, msg, extendedMessage, viaBridge: false });
+    });
+
+    // ==========================================
+    // JEMBATAN ANTAR BOT — ambil perintah yang dititipkan bot lain
+    // ==========================================
+    const ambilTitipan = async () => {
+        let files;
+        try { files = fs.readdirSync(BRIDGE_DIR); } catch (e) { return; }
+
+        for (const f of files) {
+            if (!f.startsWith(`job_${BOT_CODE}_`) || !f.endsWith('.json')) continue;
+
+            const full = path.join(BRIDGE_DIR, f);
+            let job;
+            try {
+                job = JSON.parse(fs.readFileSync(full, 'utf8'));
+                fs.unlinkSync(full); // Hapus dulu supaya tidak dikerjakan dua kali
+            } catch (e) { continue; }
+
+            // Titipan basi (lebih dari 5 menit) diabaikan
+            if (Date.now() - (job.waktu || 0) > 300000) {
+                _origLog(`⏭️ Titipan ${job.command} dilewati (kedaluwarsa).`);
+                continue;
+            }
+
+            _origLog(`📥 Menerima titipan dari bot ${job.dari}: ${job.command}`);
+            await reportOwner(`📥 *TITIPAN DARI BOT ${job.dari}*\nMengerjakan: *${job.command}*`);
+
+            try {
+                await runOwnerCommand({
+                    command: job.command,
+                    args: [job.command, ...(job.args || [])],
+                    sender: ownerJid,     // Balasan dikirim ke chat owner di bot ini
+                    msg: null,            // Tidak ada pesan asli untuk di-reply
+                    extendedMessage: null,
+                    viaBridge: true
+                });
+            } catch (err) {
+                await reportOwner(`❌ Titipan *${job.command}* gagal: ${err?.message || err}`);
+            }
         }
+    };
 
-        // ==========================================
-        // FITUR ADMIN (HANYA OWNER YANG BISA)
-        // ==========================================
+    const runOwnerCommand = async ({ command, args, sender, msg, extendedMessage, viaBridge }) => {
+            // Info website (sekarang hanya dibalas ke owner)
+            if (['info', 'link', 'sayba'].includes(command)) {
+                await sock.sendMessage(sender, { text: 'Kunjungi website resmi kami di: https://sayba.id' }, (msg ? { quoted: msg } : {}));
+                return;
+            }
 
-        if (command === '.getmembers') {
-            const groupName = args.slice(1).join(" ");
-            if (!groupName) return await sock.sendMessage(sender, { text: '❌ Ketik nama grupnya.' }, { quoted: msg });
+            // ==========================================
+            // FITUR ADMIN (HANYA OWNER YANG BISA)
+            // ==========================================
 
-            const groups = await sock.groupFetchAllParticipating();
-            let targetGroup = null;
+            if (command === '.getmembers') {
+                const groupName = args.slice(1).join(" ");
+                if (!groupName) return await sock.sendMessage(sender, { text: '❌ Ketik nama grupnya.' }, (msg ? { quoted: msg } : {}));
 
-            for (let id in groups) {
-                if (groups[id].subject === groupName) {
-                    targetGroup = groups[id];
-                    break;
+                const groups = await sock.groupFetchAllParticipating();
+                let targetGroup = null;
+
+                for (let id in groups) {
+                    if (groups[id].subject === groupName) {
+                        targetGroup = groups[id];
+                        break;
+                    }
                 }
+
+                if (!targetGroup) return await sock.sendMessage(sender, { text: `❌ Grup tidak ditemukan.` }, (msg ? { quoted: msg } : {}));
+
+                const members = targetGroup.participants;
+                let countRealNumber = 0;
+                let countLID = 0;
+                let countAdminSkipped = 0;
+                let countSelfSkipped = 0;
+                let memberList = "";
+
+                // Menyedot Nomor Asli + Kode Rahasia (LID), TANPA admin grup & nomor sendiri
+                members.forEach(mem => {
+                    const isAdmin = (mem.admin === 'admin' || mem.admin === 'superadmin');
+                    const pureId = mem.id.split(':')[0].split('@')[0];
+
+                    if (isAdmin) { countAdminSkipped++; return; }              // Kecualikan admin & owner grup
+                    if (pureId === pureOwner) { countSelfSkipped++; return; }  // Kecualikan nomor bot sendiri
+
+                    if (mem.id.endsWith('@s.whatsapp.net')) {
+                        memberList += `${mem.id.split('@')[0]}\n`;
+                        countRealNumber++;
+                    } else if (mem.id.endsWith('@lid')) {
+                        memberList += `${mem.id}\n`; // MEMUNCULKAN LID
+                        countLID++;
+                    }
+                });
+
+                let replyText = `*Daftar Nomor Anggota Grup: ${groupName}*\n`;
+                replyText += `Berhasil disedot: ${countRealNumber} nomor asli & ${countLID} ID Rahasia (LID)\n`;
+                replyText += `Dikecualikan: ${countAdminSkipped} admin/owner grup`;
+                if (countSelfSkipped > 0) replyText += ` + ${countSelfSkipped} nomor Anda sendiri`;
+                replyText += `\n\n${memberList}`;
+
+                await sock.sendMessage(sender, { text: replyText }, (msg ? { quoted: msg } : {}));
             }
 
-            if (!targetGroup) return await sock.sendMessage(sender, { text: `❌ Grup tidak ditemukan.` }, { quoted: msg });
+            if (command === '.setwhitelist') {
+                const numbersText = args.slice(1).join(" ");
+                // Memisahkan berdasarkan enter, koma, atau spasi
+                const rawNumbers = numbersText.split(/[\n, ]+/).map(n => n.trim()).filter(n => n.length > 5);
 
-            const members = targetGroup.participants;
-            let countRealNumber = 0;
-            let countLID = 0;
-            let countAdminSkipped = 0;
-            let countSelfSkipped = 0;
-            let memberList = "";
+                if (rawNumbers.length === 0) return await sock.sendMessage(sender, { text: '❌ Format salah.' }, (msg ? { quoted: msg } : {}));
 
-            // Menyedot Nomor Asli + Kode Rahasia (LID), TANPA admin grup & nomor sendiri
-            members.forEach(mem => {
-                const isAdmin = (mem.admin === 'admin' || mem.admin === 'superadmin');
-                const pureId = mem.id.split(':')[0].split('@')[0];
+                // Whitelist baru = sesi kirim baru, riwayat anti-duplikat direset
+                sentHistory = new Set();
 
-                if (isAdmin) { countAdminSkipped++; return; }              // Kecualikan admin & owner grup
-                if (pureId === pureOwner) { countSelfSkipped++; return; }  // Kecualikan nomor bot sendiri
+                const uniqueTargets = new Set();
+                let duplicateInput = 0;
 
-                if (mem.id.endsWith('@s.whatsapp.net')) {
-                    memberList += `${mem.id.split('@')[0]}\n`;
-                    countRealNumber++;
-                } else if (mem.id.endsWith('@lid')) {
-                    memberList += `${mem.id}\n`; // MEMUNCULKAN LID
-                    countLID++;
+                for (let num of rawNumbers) {
+                    let jid;
+                    if (num.endsWith('@lid')) {
+                        jid = num; // Jika LID, langsung simpan
+                    } else {
+                        let formattedNum = num.replace(/[^0-9]/g, '');
+                        if (formattedNum.startsWith('0')) formattedNum = '62' + formattedNum.substring(1);
+                        jid = formattedNum + '@s.whatsapp.net';
+                    }
+                    if (uniqueTargets.has(jid)) { duplicateInput++; continue; } // Buang nomor kembar
+                    uniqueTargets.add(jid);
                 }
-            });
 
-            let replyText = `*Daftar Nomor Anggota Grup: ${groupName}*\n`;
-            replyText += `Berhasil disedot: ${countRealNumber} nomor asli & ${countLID} ID Rahasia (LID)\n`;
-            replyText += `Dikecualikan: ${countAdminSkipped} admin/owner grup`;
-            if (countSelfSkipped > 0) replyText += ` + ${countSelfSkipped} nomor Anda sendiri`;
-            replyText += `\n\n${memberList}`;
+                tempWhitelist = [...uniqueTargets];
 
-            await sock.sendMessage(sender, { text: replyText }, { quoted: msg });
-        }
+                const totalBatch = Math.ceil(tempWhitelist.length / BATCH_SIZE);
+                let wlText = `✅ Berhasil menyimpan *${tempWhitelist.length} target* (termasuk nomor & LID) ke memori.\n`;
+                if (duplicateInput > 0) wlText += `🧹 ${duplicateInput} nomor kembar dibuang otomatis.\n`;
+                wlText += `📦 Akan dikirim dalam *${totalBatch} batch* (@${BATCH_SIZE} nomor).\n`;
+                wlText += `🔄 Riwayat anti-duplikat direset untuk sesi ini.\n\n`;
+                wlText += `Silakan Reply pesan promosi Anda dengan perintah: *.bulk*`;
 
-        if (command === '.setwhitelist') {
-            const numbersText = args.slice(1).join(" ");
-            // Memisahkan berdasarkan enter, koma, atau spasi
-            const rawNumbers = numbersText.split(/[\n, ]+/).map(n => n.trim()).filter(n => n.length > 5);
+                await sock.sendMessage(sender, { text: wlText }, (msg ? { quoted: msg } : {}));
+            }
 
-            if (rawNumbers.length === 0) return await sock.sendMessage(sender, { text: '❌ Format salah.' }, { quoted: msg });
+            if (command === '.bulk') {
+                if (isBulkRunning) return await sock.sendMessage(sender, { text: '⚠️ Masih ada proses bulk yang berjalan. Tunggu selesai, atau ketik *.stopbulk*.' }, (msg ? { quoted: msg } : {}));
+                if (tempWhitelist.length === 0) return await sock.sendMessage(sender, { text: '❌ Memori kosong!' }, (msg ? { quoted: msg } : {}));
 
-            // Whitelist baru = sesi kirim baru, riwayat anti-duplikat direset
-            sentHistory = new Set();
+                const isReply = extendedMessage && extendedMessage.contextInfo && extendedMessage.contextInfo.stanzaId;
+                if (!isReply) return await sock.sendMessage(sender, { text: '❌ Anda harus me-reply pesan!' }, (msg ? { quoted: msg } : {}));
 
-            const uniqueTargets = new Set();
-            let duplicateInput = 0;
+                const quotedContext = extendedMessage.contextInfo;
+                const messageToForward = {
+                    key: {
+                        remoteJid: sender,
+                        id: quotedContext.stanzaId,
+                        participant: quotedContext.participant
+                    },
+                    message: quotedContext.quotedMessage
+                };
 
-            for (let num of rawNumbers) {
-                let jid;
-                if (num.endsWith('@lid')) {
-                    jid = num; // Jika LID, langsung simpan
-                } else {
-                    let formattedNum = num.replace(/[^0-9]/g, '');
-                    if (formattedNum.startsWith('0')) formattedNum = '62' + formattedNum.substring(1);
-                    jid = formattedNum + '@s.whatsapp.net';
+                // Saring nomor yang SUDAH pernah dikirimi pada whitelist ini (anti duplicate send)
+                const targets = [];
+                let skippedDuplicate = 0;
+                for (let jid of tempWhitelist) {
+                    if (sentHistory.has(jid)) { skippedDuplicate++; continue; }
+                    targets.push(jid);
                 }
-                if (uniqueTargets.has(jid)) { duplicateInput++; continue; } // Buang nomor kembar
-                uniqueTargets.add(jid);
-            }
 
-            tempWhitelist = [...uniqueTargets];
+                // Whitelist langsung dikosongkan: mau kirim lagi berarti harus .setwhitelist ulang
+                tempWhitelist = [];
 
-            const totalBatch = Math.ceil(tempWhitelist.length / BATCH_SIZE);
-            let wlText = `✅ Berhasil menyimpan *${tempWhitelist.length} target* (termasuk nomor & LID) ke memori.\n`;
-            if (duplicateInput > 0) wlText += `🧹 ${duplicateInput} nomor kembar dibuang otomatis.\n`;
-            wlText += `📦 Akan dikirim dalam *${totalBatch} batch* (@${BATCH_SIZE} nomor).\n`;
-            wlText += `🔄 Riwayat anti-duplikat direset untuk sesi ini.\n\n`;
-            wlText += `Silakan Reply pesan promosi Anda dengan perintah: *.bulk*`;
+                if (targets.length === 0) {
+                    return await sock.sendMessage(sender, { text: `❌ Semua nomor di memori sudah pernah dikirimi pesan pada sesi ini.\n\nBuat whitelist baru dengan *.setwhitelist* jika ingin mengirim ulang.` }, (msg ? { quoted: msg } : {}));
+                }
 
-            await sock.sendMessage(sender, { text: wlText }, { quoted: msg });
-        }
+                isBulkRunning = true;
 
-        if (command === '.bulk') {
-            if (isBulkRunning) return await sock.sendMessage(sender, { text: '⚠️ Masih ada proses bulk yang berjalan. Tunggu selesai, atau ketik *.stopbulk*.' }, { quoted: msg });
-            if (tempWhitelist.length === 0) return await sock.sendMessage(sender, { text: '❌ Memori kosong!' }, { quoted: msg });
-
-            const isReply = extendedMessage && extendedMessage.contextInfo && extendedMessage.contextInfo.stanzaId;
-            if (!isReply) return await sock.sendMessage(sender, { text: '❌ Anda harus me-reply pesan!' }, { quoted: msg });
-
-            const quotedContext = extendedMessage.contextInfo;
-            const messageToForward = {
-                key: {
-                    remoteJid: sender,
-                    id: quotedContext.stanzaId,
-                    participant: quotedContext.participant
-                },
-                message: quotedContext.quotedMessage
-            };
-
-            // Saring nomor yang SUDAH pernah dikirimi pada whitelist ini (anti duplicate send)
-            const targets = [];
-            let skippedDuplicate = 0;
-            for (let jid of tempWhitelist) {
-                if (sentHistory.has(jid)) { skippedDuplicate++; continue; }
-                targets.push(jid);
-            }
-
-            // Whitelist langsung dikosongkan: mau kirim lagi berarti harus .setwhitelist ulang
-            tempWhitelist = [];
-
-            if (targets.length === 0) {
-                return await sock.sendMessage(sender, { text: `❌ Semua nomor di memori sudah pernah dikirimi pesan pada sesi ini.\n\nBuat whitelist baru dengan *.setwhitelist* jika ingin mengirim ulang.` }, { quoted: msg });
-            }
-
-            isBulkRunning = true;
-
-            const totalBatch = Math.ceil(targets.length / BATCH_SIZE);
-            const avgMsgSec = (MIN_MSG_DELAY_SEC + MAX_MSG_DELAY_SEC) / 2;
-            const avgBatchMin = (MIN_BATCH_DELAY_MIN + MAX_BATCH_DELAY_MIN) / 2;
-            const estimasi = Math.round(
-                ((targets.length - totalBatch) * avgMsgSec) / 60 + (totalBatch - 1) * avgBatchMin
-            );
-
-            let startText = `⏳ Memulai Forward pesan ke ${targets.length} target.\n`;
-            if (skippedDuplicate > 0) startText += `🚫 ${skippedDuplicate} nomor dilewati (sudah pernah dikirimi).\n`;
-            startText += `📦 Dibagi ${totalBatch} batch @${BATCH_SIZE} nomor.\n`;
-            startText += `⏱️ Jeda antar nomor: ${MIN_MSG_DELAY_SEC}-${MAX_MSG_DELAY_SEC} detik.\n`;
-            startText += `😴 Jeda antar batch: ${MIN_BATCH_DELAY_MIN}-${MAX_BATCH_DELAY_MIN} menit.\n`;
-            startText += `Estimasi selesai: ± ${estimasi} menit.\n\nKetik *.stopbulk* untuk menghentikan.`;
-            await sock.sendMessage(sender, { text: startText }, { quoted: msg });
-
-            let successCount = 0;
-            let failCount = 0;
-            let stopped = false;
-
-            for (let b = 0; b < totalBatch; b++) {
-                if (!isBulkRunning) { stopped = true; break; }
-
-                const batch = targets.slice(b * BATCH_SIZE, (b + 1) * BATCH_SIZE);
-                console.log(`\n📦 === BATCH ${b + 1}/${totalBatch} (${batch.length} nomor) ===`);
-
-                // LAPOR KE OWNER: batch akan dijalankan
-                const batchStart = new Date().toLocaleTimeString('id-ID');
-                let daftarTarget = batch.map((jid, idx) => `${idx + 1}. ${jid.split('@')[0]}`).join('\n');
-                await reportOwner(
-                    `▶️ *BATCH ${b + 1}/${totalBatch} AKAN DIJALANKAN*\n` +
-                    `🕐 Mulai: ${batchStart}\n` +
-                    `👥 Jumlah target: ${batch.length} nomor\n` +
-                    `⏱️ Jeda antar nomor: ${MIN_MSG_DELAY_SEC}-${MAX_MSG_DELAY_SEC} detik\n\n` +
-                    `*Daftar target:*\n${daftarTarget}`
+                const totalBatch = Math.ceil(targets.length / BATCH_SIZE);
+                const avgMsgSec = (MIN_MSG_DELAY_SEC + MAX_MSG_DELAY_SEC) / 2;
+                const avgBatchMin = (MIN_BATCH_DELAY_MIN + MAX_BATCH_DELAY_MIN) / 2;
+                const estimasi = Math.round(
+                    ((targets.length - totalBatch) * avgMsgSec) / 60 + (totalBatch - 1) * avgBatchMin
                 );
 
-                let batchSuccess = 0;
-                let batchFail = 0;
+                let startText = `⏳ Memulai Forward pesan ke ${targets.length} target.\n`;
+                if (skippedDuplicate > 0) startText += `🚫 ${skippedDuplicate} nomor dilewati (sudah pernah dikirimi).\n`;
+                startText += `📦 Dibagi ${totalBatch} batch @${BATCH_SIZE} nomor.\n`;
+                startText += `⏱️ Jeda antar nomor: ${MIN_MSG_DELAY_SEC}-${MAX_MSG_DELAY_SEC} detik.\n`;
+                startText += `😴 Jeda antar batch: ${MIN_BATCH_DELAY_MIN}-${MAX_BATCH_DELAY_MIN} menit.\n`;
+                startText += `Estimasi selesai: ± ${estimasi} menit.\n\nKetik *.stopbulk* untuk menghentikan.`;
+                await sock.sendMessage(sender, { text: startText }, (msg ? { quoted: msg } : {}));
 
-                for (let i = 0; i < batch.length; i++) {
+                let successCount = 0;
+                let failCount = 0;
+                let stopped = false;
+
+                for (let b = 0; b < totalBatch; b++) {
                     if (!isBulkRunning) { stopped = true; break; }
 
-                    const targetJid = batch[i];
-                    try {
-                        await sock.sendMessage(targetJid, { forward: messageToForward });
-                        sentHistory.add(targetJid); // Tandai supaya tidak dikirimi lagi
-                        successCount++;
-                        batchSuccess++;
-                        console.log(`   [B${b + 1}] ✅ Terkirim ke ${targetJid}`);
-                    } catch (err) {
-                        failCount++;
-                        batchFail++;
-                        console.log(`   [B${b + 1}] ❌ Gagal kirim ke ${targetJid}`);
+                    const batch = targets.slice(b * BATCH_SIZE, (b + 1) * BATCH_SIZE);
+                    console.log(`\n📦 === BATCH ${b + 1}/${totalBatch} (${batch.length} nomor) ===`);
+
+                    // LAPOR KE OWNER: batch akan dijalankan
+                    const batchStart = new Date().toLocaleTimeString('id-ID');
+                    let daftarTarget = batch.map((jid, idx) => `${idx + 1}. ${jid.split('@')[0]}`).join('\n');
+                    await reportOwner(
+                        `▶️ *BATCH ${b + 1}/${totalBatch} AKAN DIJALANKAN*\n` +
+                        `🕐 Mulai: ${batchStart}\n` +
+                        `👥 Jumlah target: ${batch.length} nomor\n` +
+                        `⏱️ Jeda antar nomor: ${MIN_MSG_DELAY_SEC}-${MAX_MSG_DELAY_SEC} detik\n\n` +
+                        `*Daftar target:*\n${daftarTarget}`
+                    );
+
+                    let batchSuccess = 0;
+                    let batchFail = 0;
+
+                    for (let i = 0; i < batch.length; i++) {
+                        if (!isBulkRunning) { stopped = true; break; }
+
+                        const targetJid = batch[i];
+                        try {
+                            await sock.sendMessage(targetJid, { forward: messageToForward });
+                            sentHistory.add(targetJid); // Tandai supaya tidak dikirimi lagi
+                            successCount++;
+                            batchSuccess++;
+                            console.log(`   [B${b + 1}] ✅ Terkirim ke ${targetJid}`);
+                        } catch (err) {
+                            failCount++;
+                            batchFail++;
+                            console.log(`   [B${b + 1}] ❌ Gagal kirim ke ${targetJid}`);
+                        }
+
+                        // Jeda acak antar nomor di dalam batch (nomor terakhir batch tidak perlu)
+                        if (i < batch.length - 1 && isBulkRunning) {
+                            const delay = randomMsgDelayMs();
+                            console.log(`   ⏱️  Jeda ${Math.round(delay / 1000)} detik...`);
+                            await sleep(delay);
+                        }
                     }
 
-                    // Jeda acak antar nomor di dalam batch (nomor terakhir batch tidak perlu)
-                    if (i < batch.length - 1 && isBulkRunning) {
-                        const delay = randomMsgDelayMs();
-                        console.log(`   ⏱️  Jeda ${Math.round(delay / 1000)} detik...`);
-                        await sleep(delay);
+                    const isLastBatch = (b === totalBatch - 1);
+                    const willStop = stopped || !isBulkRunning;
+                    const batchDelay = (!willStop && !isLastBatch) ? randomBatchDelayMs() : 0;
+
+                    // LAPOR KE OWNER: batch selesai dijalankan
+                    let doneText = `${willStop ? '🛑' : '✅'} *BATCH ${b + 1}/${totalBatch} SELESAI*\n`;
+                    doneText += `🕐 Selesai: ${new Date().toLocaleTimeString('id-ID')}\n`;
+                    doneText += `✅ Berhasil: ${batchSuccess} | ❌ Gagal: ${batchFail}\n`;
+                    doneText += `📊 Total keseluruhan: ${successCount}/${targets.length} terkirim\n`;
+                    if (willStop) {
+                        doneText += `\n🛑 Proses dihentikan oleh perintah *.stopbulk*.`;
+                    } else if (isLastBatch) {
+                        doneText += `\n🎉 Ini batch terakhir.`;
+                    } else {
+                        doneText += `\n😴 Istirahat ${formatDuration(batchDelay)} sebelum *Batch ${b + 2}/${totalBatch}*.`;
+                    }
+                    await reportOwner(doneText);
+
+                    if (willStop) { stopped = true; break; }
+
+                    // Jeda acak antar batch (batch terakhir tidak perlu)
+                    if (!isLastBatch) {
+                        console.log(`😴 Batch ${b + 1} selesai. Istirahat ${formatDuration(batchDelay)}...`);
+                        await sleep(batchDelay);
                     }
                 }
 
-                const isLastBatch = (b === totalBatch - 1);
-                const willStop = stopped || !isBulkRunning;
-                const batchDelay = (!willStop && !isLastBatch) ? randomBatchDelayMs() : 0;
-
-                // LAPOR KE OWNER: batch selesai dijalankan
-                let doneText = `${willStop ? '🛑' : '✅'} *BATCH ${b + 1}/${totalBatch} SELESAI*\n`;
-                doneText += `🕐 Selesai: ${new Date().toLocaleTimeString('id-ID')}\n`;
-                doneText += `✅ Berhasil: ${batchSuccess} | ❌ Gagal: ${batchFail}\n`;
-                doneText += `📊 Total keseluruhan: ${successCount}/${targets.length} terkirim\n`;
-                if (willStop) {
-                    doneText += `\n🛑 Proses dihentikan oleh perintah *.stopbulk*.`;
-                } else if (isLastBatch) {
-                    doneText += `\n🎉 Ini batch terakhir.`;
+                if (stopped) {
+                    await reportOwner(`🛑 *BULK DIHENTIKAN*\nBerhasil: ${successCount} | Gagal: ${failCount} | Sisa: ${targets.length - successCount - failCount} target.\n\nBuat whitelist baru (*.setwhitelist*) untuk melanjutkan — nomor yang sudah terkirim otomatis dilewati.`);
                 } else {
-                    doneText += `\n😴 Istirahat ${formatDuration(batchDelay)} sebelum *Batch ${b + 2}/${totalBatch}*.`;
+                    await reportOwner(`🎉 *SEMUA BATCH SELESAI*\n${totalBatch} batch tuntas.\n✅ Berhasil: ${successCount} target\n❌ Gagal: ${failCount} target\n🕐 Selesai: ${new Date().toLocaleTimeString('id-ID')}\n\nMemori sudah dikosongkan. Untuk kirim lagi, buat whitelist baru dengan *.setwhitelist*.`);
                 }
-                await reportOwner(doneText);
-
-                if (willStop) { stopped = true; break; }
-
-                // Jeda acak antar batch (batch terakhir tidak perlu)
-                if (!isLastBatch) {
-                    console.log(`😴 Batch ${b + 1} selesai. Istirahat ${formatDuration(batchDelay)}...`);
-                    await sleep(batchDelay);
-                }
+                isBulkRunning = false;
             }
 
-            if (stopped) {
-                await reportOwner(`🛑 *BULK DIHENTIKAN*\nBerhasil: ${successCount} | Gagal: ${failCount} | Sisa: ${targets.length - successCount - failCount} target.\n\nBuat whitelist baru (*.setwhitelist*) untuk melanjutkan — nomor yang sudah terkirim otomatis dilewati.`);
-            } else {
-                await reportOwner(`🎉 *SEMUA BATCH SELESAI*\n${totalBatch} batch tuntas.\n✅ Berhasil: ${successCount} target\n❌ Gagal: ${failCount} target\n🕐 Selesai: ${new Date().toLocaleTimeString('id-ID')}\n\nMemori sudah dikosongkan. Untuk kirim lagi, buat whitelist baru dengan *.setwhitelist*.`);
+            if (command === '.stopbulk') {
+                if (!isBulkRunning) return await sock.sendMessage(sender, { text: 'ℹ️ Tidak ada proses bulk yang berjalan.' }, (msg ? { quoted: msg } : {}));
+                isBulkRunning = false;
+                await sock.sendMessage(sender, { text: '🛑 Perintah berhenti diterima. Bulk akan berhenti setelah jeda yang sedang berjalan selesai.' }, (msg ? { quoted: msg } : {}));
             }
-            isBulkRunning = false;
-        }
 
-        if (command === '.stopbulk') {
-            if (!isBulkRunning) return await sock.sendMessage(sender, { text: 'ℹ️ Tidak ada proses bulk yang berjalan.' }, { quoted: msg });
-            isBulkRunning = false;
-            await sock.sendMessage(sender, { text: '🛑 Perintah berhenti diterima. Bulk akan berhenti setelah jeda yang sedang berjalan selesai.' }, { quoted: msg });
-        }
+            if (command === '.status') {
+                const upSec = Math.floor(process.uptime());
+                const jam = Math.floor(upSec / 3600);
+                const menit = Math.floor((upSec % 3600) / 60);
 
-        if (command === '.status') {
-            const upSec = Math.floor(process.uptime());
-            const jam = Math.floor(upSec / 3600);
-            const menit = Math.floor((upSec % 3600) / 60);
+                let statusText = `📊 *STATUS ${BOT_NAME.toUpperCase()}*\n`;
+                statusText += `🔑 Kode bot: *${BOT_CODE}* | 📁 ${AUTH_FOLDER}\n\n`;
+                statusText += `🟢 Aktif: ${jam} jam ${menit} menit\n`;
+                statusText += `📋 Whitelist di memori: ${tempWhitelist.length} nomor\n`;
+                statusText += `📨 Sudah dikirimi (sesi ini): ${sentHistory.size} nomor\n`;
+                statusText += `⚙️ Bulk berjalan: ${isBulkRunning ? 'YA' : 'tidak'}\n`;
+                statusText += `🔇 Log enkripsi diredam: ${decryptErrorCount}x`;
+                if (lastDecryptError) statusText += `\n🕐 Terakhir: ${lastDecryptError}`;
+                statusText += `\n\n_Log enkripsi yang diredam itu normal dan sembuh sendiri._`;
 
-            let statusText = `📊 *STATUS ${BOT_NAME.toUpperCase()}*\n`;
-            statusText += `🔑 Kode bot: *${BOT_CODE}* | 📁 ${AUTH_FOLDER}\n\n`;
-            statusText += `🟢 Aktif: ${jam} jam ${menit} menit\n`;
-            statusText += `📋 Whitelist di memori: ${tempWhitelist.length} nomor\n`;
-            statusText += `📨 Sudah dikirimi (sesi ini): ${sentHistory.size} nomor\n`;
-            statusText += `⚙️ Bulk berjalan: ${isBulkRunning ? 'YA' : 'tidak'}\n`;
-            statusText += `🔇 Log enkripsi diredam: ${decryptErrorCount}x`;
-            if (lastDecryptError) statusText += `\n🕐 Terakhir: ${lastDecryptError}`;
-            statusText += `\n\n_Log enkripsi yang diredam itu normal dan sembuh sendiri._`;
-
-            await sock.sendMessage(sender, { text: statusText }, { quoted: msg });
-        }
-    });
+                await sock.sendMessage(sender, { text: statusText }, (msg ? { quoted: msg } : {}));
+            }
+    };
 }
 
 startBot();
