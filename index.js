@@ -626,6 +626,47 @@ ${text}` });
         // .tes — kirim ke SEMUA kemungkinan alamat owner
         // Yang sampai di HP Anda berarti alamat yang benar.
         // ==========================================
+        // ==========================================
+        // .kirim <nomor> [pesan] — uji kirim japri ke nomor mana pun
+        // Dipakai untuk memastikan bot ini bisa mengirim pesan pribadi.
+        // ==========================================
+        if (command === '.kirim' && isOwner) {
+            const tujuan = (args[1] || '').replace(/[^0-9]/g, '');
+            if (tujuan.length < 8) {
+                await sock.sendMessage(sender, { text: '❌ Format: *.kirim 628123456789 halo*' }, (msg ? { quoted: msg } : {}));
+                return;
+            }
+
+            const nomorTujuan = tujuan.startsWith('0') ? '62' + tujuan.slice(1) : tujuan;
+            const isiPesan = args.slice(2).join(' ') || `🧪 Uji kirim dari ${BOT_NAME} (${new Date().toLocaleTimeString('id-ID')})`;
+            const jidTujuan = `${nomorTujuan}@s.whatsapp.net`;
+
+            try {
+                // Pastikan dulu nomornya terdaftar di WhatsApp
+                const cek = await sock.onWhatsApp(jidTujuan);
+                const ada = Array.isArray(cek) ? cek[0] : null;
+                _origLog(`   🔎 [${BOT_CODE}] ${nomorTujuan} terdaftar? ${ada?.exists ? 'YA' : 'TIDAK'} | jid: ${ada?.jid || '-'} | lid: ${ada?.lid || '-'}`);
+
+                if (!ada?.exists) {
+                    await sock.sendMessage(sender, { text: `❌ ${nomorTujuan} tidak terdaftar di WhatsApp.` }, (msg ? { quoted: msg } : {}));
+                    return;
+                }
+
+                // Kirim ke alamat yang diberikan WhatsApp sendiri
+                const alamatAsli = ada.jid || jidTujuan;
+                const r = await sock.sendMessage(alamatAsli, { text: isiPesan });
+                _origLog(`   🧪 [${BOT_CODE}] uji kirim -> ${alamatAsli} | id: ${r?.key?.id || '-'}`);
+
+                await sock.sendMessage(sender, { text:
+                    `📤 Dikirim ke ${nomorTujuan}\nAlamat: ${alamatAsli}\nID: ${r?.key?.id || '-'}\n\nPeriksa HP tujuan. Status kirim muncul di log Termux.`
+                }, (msg ? { quoted: msg } : {}));
+            } catch (err) {
+                _origError(`   ❌ [${BOT_CODE}] uji kirim gagal: ${err?.message || err}`);
+                await sock.sendMessage(sender, { text: `❌ Gagal: ${err?.message || err}` }, (msg ? { quoted: msg } : {}));
+            }
+            return;
+        }
+
         if (['.tes', '.test', '.uji', '.cek'].includes(command) && isOwner) {
             const nomorDia = idPengirim.map(nomorOwnerDari).find(Boolean);
 
@@ -787,7 +828,7 @@ ${text}` });
         // Perintah yang dikenali bot ini
         const PERINTAH_DIKENAL = [
             '.getmembers', '.setwhitelist', '.bulk', '.stopbulk',
-            '.status', '.ceklid', '.tes', '.test', '.uji', '.cek',
+            '.status', '.ceklid', '.tes', '.test', '.uji', '.cek', '.kirim',
             'info', 'link', 'sayba'
         ];
 
