@@ -1,18 +1,15 @@
 {
   "name": "sayba-bot-termux",
   "version": "1.0.0",
-  "description": "Bot WhatsApp Sayba - multi nomor, kirim batch, laporan ke owner",
-  "main": "index1.js",
+  "description": "Bot WhatsApp Sayba - kirim batch, laporan ke owner, login QR",
+  "main": "index.js",
   "private": true,
   "scripts": {
-    "start": "node index1.js",
-    "start:bot1": "node index1.js",
-    "start:bot2": "node index2.js"
+    "start": "node index.js"
   },
   "dependencies": {
     "@whiskeysockets/baileys": "^6.7.9",
     "pino": "^9.5.0",
-    "qrcode": "^1.5.4",
     "qrcode-terminal": "^0.12.0"
   }
 }
