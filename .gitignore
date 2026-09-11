@@ -1,0 +1,37 @@
+# ==========================================
+# KUNCI SESI WHATSAPP — JANGAN DIUNGGAH
+# Isinya bukan sekadar nomor, tapi akses penuh ke akun WhatsApp.
+# Bocor sedikit saja = akun bisa diambil alih tanpa scan QR.
+# Sesi yang dipulihkan dari git juga sering basi dan memicu error Bad MAC.
+# ==========================================
+auth_sayba/
+auth_sayba*/
+auth_*/
+creds.json
+
+# QR login sementara (berisi akses masuk)
+qr_share/
+qr_*.png
+*.png.name
+
+# ==========================================
+# Sampah build & log (bisa dibuat ulang, tidak perlu disimpan)
+# ==========================================
+node_modules/
+package-lock.json
+logs/
+*.log
+npm-debug.log*
+.pm2/
+
+# Sistem
+.DS_Store
+Thumbs.db
+*.tmp
+.vscode/
+.idea/
+
+# ==========================================
+# CATATAN: ecosystem.config.js SENGAJA ikut diunggah
+# karena repo ini private dan nomornya milik sendiri.
+# ==========================================
