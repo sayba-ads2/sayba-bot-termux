@@ -2,11 +2,10 @@ const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = requi
 const pino = require('pino');
 const qrcode = require('qrcode-terminal');
 
-// Nomor Anda (Owner) - Pastikan formatnya 628...
-const ownerNumber = "6287803445749@s.whatsapp.net";
+// Nomor Owner murni (Gunakan awalan 628)
+const pureOwner = "6287803445749";
 
 async function startBot() {
-    // Tempat menyimpan sesi login (QR Code) agar tidak scan ulang terus
     const { state, saveCreds } = await useMultiFileAuthState('auth_sayba');
 
     const sock = makeWASocket({
@@ -14,14 +13,11 @@ async function startBot() {
         logger: pino({ level: "silent" })
     });
 
-    // Simpan sesi setiap ada pembaruan
     sock.ev.on('creds.update', saveCreds);
 
-    // Deteksi status koneksi dan memunculkan QR Code
     sock.ev.on('connection.update', (update) => {
         const { connection, lastDisconnect, qr } = update;
         
-        // Memunculkan QR Code secara manual ke layar Termux
         if (qr) {
             console.log('\n--- SISTEM MEMINTA LOGIN ---');
             qrcode.generate(qr, { small: true });
@@ -37,34 +33,46 @@ async function startBot() {
         }
     });
 
-    // Deteksi pesan masuk
     sock.ev.on('messages.upsert', async m => {
         const msg = m.messages[0];
         if(!msg.message || msg.key.fromMe) return;
 
-        // Mendapatkan nomor pengirim
         const sender = msg.key.remoteJid;
         const isGroup = sender.endsWith('@g.us');
         const participant = isGroup ? msg.key.participant : sender;
         
-        // FITUR KEAMANAN: HANYA merespon nomor Owner (087803445749)
-        if (participant !== ownerNumber) return; 
+        // PENGAMAN MULTI-DEVICE: Membuang embel-embel :5 di belakang nomor
+        const pureParticipant = participant.split(':')[0].split('@')[0];
+        
+        // Cek apakah murni nomor Owner
+        if (pureParticipant !== pureOwner) return; 
 
-        // Mengambil isi teks dari pesan (baik pesan biasa atau balas/reply)
-        const messageType = Object.keys(msg.message)[0];
-        const text = messageType === 'conversation' ? msg.message.conversation : 
-                     messageType === 'extendedTextMessage' ? msg.message.extendedTextMessage.text : '';
+        // PENGEKSTRAK TEKS KEBAL PESAN MENGHILANG (EPHEMERAL)
+        let text = "";
+        let extendedMessage = null;
 
-        // Memecah pesan menjadi per kata
+        if (msg.message.conversation) {
+            text = msg.message.conversation;
+        } else if (msg.message.extendedTextMessage) {
+            text = msg.message.extendedTextMessage.text;
+            extendedMessage = msg.message.extendedTextMessage;
+        } else if (msg.message.ephemeralMessage) {
+            const eph = msg.message.ephemeralMessage.message;
+            text = eph.conversation || eph.extendedTextMessage?.text || "";
+            extendedMessage = eph.extendedTextMessage;
+        }
+
+        if (!text) return; // Jika yang dikirim gambar/stiker tanpa teks, diamkan
+
         const args = text.trim().split(/ +/);
         const command = args[0].toLowerCase();
 
-        // 1. FITUR AUTO RESPON
+        // 1. AUTO RESPON
         if (['info', 'link', 'sayba'].includes(command)) {
             await sock.sendMessage(sender, { text: 'Kunjungi website resmi kami di: https://sayba.id' }, { quoted: msg });
         }
 
-        // 2. FITUR MENGAMBIL NOMOR ANGGOTA GRUP
+        // 2. MENGAMBIL NOMOR ANGGOTA GRUP
         if (command === '.getmembers') {
             const groupName = args.slice(1).join(" ");
             if (!groupName) {
@@ -96,10 +104,12 @@ async function startBot() {
             await sock.sendMessage(sender, { text: memberList }, { quoted: msg });
         }
 
-        // 3. FITUR BULK MESSAGE WHITELIST 
+        // 3. BULK MESSAGE WHITELIST 
         if (command === '.bulk') {
             const broadcastMessage = args.slice(1).join(" ");
-            const isReply = msg.message.extendedTextMessage && msg.message.extendedTextMessage.contextInfo && msg.message.extendedTextMessage.contextInfo.quotedMessage;
+            
+            // Cek Reply kebal Ephemeral
+            const isReply = extendedMessage && extendedMessage.contextInfo && extendedMessage.contextInfo.quotedMessage;
             
             if (!isReply) {
                 await sock.sendMessage(sender, { text: '❌ Anda harus *me-reply* (membalas) pesan yang berisi daftar nomor whitelist.' }, { quoted: msg });
@@ -110,8 +120,8 @@ async function startBot() {
                 return;
             }
 
-            const quotedMsg = msg.message.extendedTextMessage.contextInfo.quotedMessage;
-            const quotedText = quotedMsg.conversation || quotedMsg.extendedTextMessage?.text || "";
+            const quotedMsg = extendedMessage.contextInfo.quotedMessage;
+            const quotedText = quotedMsg.conversation || quotedMsg.extendedTextMessage?.text || quotedMsg.ephemeralMessage?.message?.conversation || quotedMsg.ephemeralMessage?.message?.extendedTextMessage?.text || "";
 
             const rawNumbers = quotedText.split(/[\n,]/).map(n => n.trim()).filter(n => n.length > 8);
             
