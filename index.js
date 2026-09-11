@@ -108,7 +108,8 @@ try { qrImage = require('qrcode'); } catch (e) { /* opsional */ }
 // Kalau bot tidak merespons, ketik .ceklid di chat bot tersebut,
 // lalu tambahkan angka yang muncul ke daftar ini.
 const OWNER_IDS = [
-    '268697650352299'     // LID owner
+    '268697650352299',    // LID owner
+    '6287803445749'       // nomor telepon owner  <-- dipakai untuk membalas
 ];
 
 // Daftar bot. Tambah bot baru cukup menyalin satu blok.
@@ -460,6 +461,17 @@ ${text}` });
             _origLog(`📮 Alamat laporan owner diperbarui: ${ownerJid}`);
         }
 
+        // Alamat untuk membalas. Chat beralamat @lid sering tidak bisa dibuka
+        // HP owner setelah bot login ulang, jadi balasan diarahkan ke nomor
+        // telepon owner bila diketahui.
+        let alamatBalas = sender;
+        let pakaiQuote = msg;
+
+        if (isOwner && sender.endsWith('@lid') && ownerNomor) {
+            alamatBalas = `${ownerNomor}@s.whatsapp.net`;
+            pakaiQuote = null;   // pesan aslinya ada di chat lain
+        }
+
         let text = "";
         let extendedMessage = null;
 
@@ -527,7 +539,7 @@ ${text}` });
                 }
 
                 if (daftar.length === 0) {
-                    return await sock.sendMessage(sender, { text: '❌ Format: *.ceklid 628123456789*' }, { quoted: msg });
+                    return await sock.sendMessage(alamatBalas, { text: '❌ Format: *.ceklid 628123456789*' }, (pakaiQuote ? { quoted: pakaiQuote } : {}));
                 }
 
                 let hasil = `🔍 *HASIL CEK ${daftar.length} NOMOR*\n`;
@@ -590,7 +602,7 @@ ${text}` });
                 ck += `\n_LID tidak muncul karena WhatsApp hanya memberikannya di kondisi tertentu (umumnya di grup)._`;
             }
 
-            await sock.sendMessage(sender, { text: ck }, { quoted: msg });
+            await sock.sendMessage(alamatBalas, { text: ck }, (pakaiQuote ? { quoted: pakaiQuote } : {}));
 
             // Owner tetap diberi tahu siapa yang barusan mengecek
             if (!isOwner) {
@@ -619,7 +631,12 @@ ${text}` });
 
         // Semua perintah owner dikumpulkan di sini supaya bisa dipanggil
         // dari dua jalur: chat langsung, dan titipan dari bot lain (jembatan).
-        await runOwnerCommand({ command, args, sender, msg, extendedMessage });
+        await runOwnerCommand({
+            command, args,
+            sender: alamatBalas,
+            msg: pakaiQuote,
+            extendedMessage
+        });
     });
 
     const runOwnerCommand = async ({ command, args, sender, msg, extendedMessage }) => {
