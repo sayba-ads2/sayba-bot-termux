@@ -467,6 +467,26 @@ ${text}` });
         }
     };
 
+    // ==========================================
+    // PEMANTAU STATUS PENGIRIMAN
+    // Menunjukkan pesan yang kita kirim benar-benar SAMPAI atau tidak.
+    //   SERVER  = baru diterima server WhatsApp
+    //   SAMPAI  = sudah masuk ke HP penerima (centang dua)
+    //   DIBACA  = sudah dibuka penerima
+    // Kalau berhenti di SERVER terus, berarti WhatsApp menahan pesan
+    // nomor ini — bukan masalah kode.
+    // ==========================================
+    const namaStatus = { 0: 'ERROR', 1: 'MENUNGGU', 2: 'SERVER', 3: 'SAMPAI', 4: 'DIBACA', 5: 'DIPUTAR' };
+
+    sock.ev.on('messages.update', (daftar) => {
+        for (const u of daftar) {
+            const st = u.update?.status;
+            if (st === undefined || st === null) continue;
+            if (!u.key?.fromMe) continue;   // hanya pantau pesan kita sendiri
+            _origLog(`   📬 [${BOT_CODE}] pesan ${u.key?.id} ke ${u.key?.remoteJid} → ${namaStatus[st] || st}`);
+        }
+    });
+
     // Nama grup disimpan sementara supaya tidak menanyakan server tiap pesan
     const cacheNamaGrup = new Map();
 
@@ -733,6 +753,8 @@ ${text}` });
     });
 
     const runOwnerCommand = async ({ command, args, sender, msg, extendedMessage }) => {
+        _origLog(`   ⚙️ [${BOT_CODE}] menjalankan "${command}" | whitelist: ${tempWhitelist.length} | bulk jalan: ${isBulkRunning ? 'ya' : 'tidak'} | balas ke: ${sender}`);
+
             // Info website (sekarang hanya dibalas ke owner)
             if (['info', 'link', 'sayba'].includes(command)) {
                 await sock.sendMessage(sender, { text: 'Kunjungi website resmi kami di: https://sayba.id' }, (msg ? { quoted: msg } : {}));
