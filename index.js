@@ -628,7 +628,7 @@ ${text}` });
         // .tes — kirim ke SEMUA kemungkinan alamat owner
         // Yang sampai di HP Anda berarti alamat yang benar.
         // ==========================================
-        if (command === '.tes' && isOwner) {
+        if (['.tes', '.test', '.uji', '.cek'].includes(command) && isOwner) {
             const nomorDia = idPengirim.map(nomorOwnerDari).find(Boolean);
 
             const kandidat = [
@@ -785,6 +785,26 @@ ${text}` });
 
     const runOwnerCommand = async ({ command, args, sender, msg, extendedMessage }) => {
         _origLog(`   ⚙️ [${BOT_CODE}] menjalankan "${command}" | whitelist: ${tempWhitelist.length} | bulk jalan: ${isBulkRunning ? 'ya' : 'tidak'} | balas ke: ${sender}`);
+
+        // Perintah yang dikenali bot ini
+        const PERINTAH_DIKENAL = [
+            '.getmembers', '.setwhitelist', '.bulk', '.stopbulk',
+            '.status', '.ceklid', '.tes', '.test', '.uji', '.cek',
+            'info', 'link', 'sayba'
+        ];
+
+        if (!PERINTAH_DIKENAL.includes(command)) {
+            _origLog(`   ❓ [${BOT_CODE}] perintah "${command}" tidak dikenal.`);
+            await sock.sendMessage(sender, { text:
+                `❓ Perintah *${command}* tidak dikenal.\n\n` +
+                `Yang tersedia:\n` +
+                `• .status\n• .ceklid\n• .getmembers <nama grup>\n` +
+                `• .setwhitelist <nomor>\n• .bulk  (reply pesan promo)\n` +
+                `• .stopbulk\n• .tes  (uji alamat balasan)\n\n` +
+                `_Tambahkan angka bot di belakang bila perlu: .status${BOT_CODE}_`
+            }, (msg ? { quoted: msg } : {}));
+            return;
+        }
 
             // Info website (sekarang hanya dibalas ke owner)
             if (['info', 'link', 'sayba'].includes(command)) {
