@@ -97,32 +97,54 @@ const path = require('path');
 let qrImage = null;
 try { qrImage = require('qrcode'); } catch (e) { /* opsional */ }
 
-// ==========================================
-// KONFIGURASI PER-BOT (dibaca dari argumen / pm2)
-// Pemakaian: node index.js <folderAuth> <nomorOwner> <kodeBot> <namaBot>
-// Contoh   : node index.js auth_sayba2 6281234567890 2 "Sayba Dua"
-// ==========================================
-const AUTH_FOLDER = process.argv[2] || 'auth_sayba';
-// Nomor owner WAJIB diisi lewat argumen / pm2, jangan ditulis di sini
-// supaya nomor pribadi tidak ikut terunggah ke GitHub.
+// ==========================================================
+//  PENGATURAN — SEMUA DIATUR DI SINI
 //
-// BOLEH BEBERAPA, dipisah koma (tanpa spasi):
-//   268697650352299,6281234567890
-// Ini penting karena tiap bot bisa melihat Anda dengan LID yang BERBEDA.
-// Cek dengan mengetik .ceklid di chat bot yang bersangkutan.
-const OWNER_IDS = (process.argv[3] || '')
-    .split(',')
-    .map(x => x.replace(/[^0-9]/g, ''))
-    .filter(Boolean);
+//  Jalankan:  node index.js 1     (untuk bot 1)
+//             node index.js 2     (untuk bot 2)
+// ==========================================================
+
+// Identitas Anda sebagai owner. Boleh lebih dari satu.
+// Kalau bot tidak merespons, ketik .ceklid di chat bot tersebut,
+// lalu tambahkan angka yang muncul ke daftar ini.
+const OWNER_IDS = [
+    '268697650352299'     // LID owner
+];
+
+// Daftar bot. Tambah bot baru cukup menyalin satu blok.
+const DAFTAR_BOT = {
+    '1': {
+        nama:   'Sayba Satu',
+        auth:   'auth_sayba',
+        nomor:  '628979602864'      // nomor WA bot ini (untuk kode pairing)
+    },
+    '2': {
+        nama:   'Sayba Dua',
+        auth:   'auth_sayba2',
+        nomor:  '6281332611714'     // 081332611714
+    }
+};
+
+// ==========================================================
+//  Di bawah ini tidak perlu diubah
+// ==========================================================
+const BOT_CODE = (process.argv[2] || '1').toLowerCase();
+const KONFIG   = DAFTAR_BOT[BOT_CODE];
+
+if (!KONFIG) {
+    _origLog(`❌ Bot "${BOT_CODE}" tidak ada di DAFTAR_BOT.`);
+    _origLog(`   Pilihan yang tersedia: ${Object.keys(DAFTAR_BOT).join(', ')}`);
+    _origLog(`   Contoh: node index.js 1`);
+    process.exit(1);
+}
+
+const AUTH_FOLDER = KONFIG.auth;
+const BOT_NAME    = KONFIG.nama;
+const BOT_NUMBER  = (KONFIG.nomor || '').replace(/[^0-9]/g, '');
+const BOT_TAG     = `[BOT-${BOT_CODE.toUpperCase()} ${BOT_NAME}]`;
 
 const pureOwner = OWNER_IDS[0] || '';   // Dipakai untuk alamat kirim laporan
 const isOwnerId = (id) => OWNER_IDS.includes(id);
-const BOT_CODE    = (process.argv[4] || '1').toLowerCase();
-const BOT_NAME    = process.argv[5] || `Sayba ${BOT_CODE}`;
-const BOT_TAG     = `[BOT-${BOT_CODE.toUpperCase()} ${BOT_NAME}]`;
-// Argumen ke-6 (opsional): nomor WA bot ini sendiri, format 62xxx.
-// Kalau diisi, login pakai KODE PAIRING 8 digit — tidak perlu scan QR.
-const BOT_NUMBER  = (process.argv[6] || '').replace(/[^0-9]/g, '');
 
 // Folder titipan QR antar bot: bot yang sudah online akan mengirim QR
 // milik bot lain ke WhatsApp Owner sebagai gambar.
@@ -130,17 +152,15 @@ const QR_SHARE_DIR = path.join(__dirname, 'qr_share');
 try { fs.mkdirSync(QR_SHARE_DIR, { recursive: true }); } catch (e) {}
 
 if (!pureOwner) {
-    _origLog('❌ NOMOR OWNER BELUM DIISI!');
-    _origLog('   Jalankan: node index.js <folderAuth> <nomorOwner> <kodeBot> "<namaBot>"');
-    _origLog('   Contoh  : node index.js auth_sayba 628123456789 1 "Sayba Satu"');
+    _origLog('❌ OWNER_IDS masih kosong! Isi LID/nomor Anda di bagian atas index.js.');
     process.exit(1);
 }
 
 _origLog('==========================================');
 _origLog(`🤖 ${BOT_TAG}`);
 _origLog(`📁 Folder auth : ${AUTH_FOLDER}`);
+_origLog(`📱 Nomor bot   : ${BOT_NUMBER || '(kosong, login pakai QR)'}`);
 _origLog(`👤 Owner       : ${OWNER_IDS.join(', ')}`);
-_origLog(`🔑 Label bot   : ${BOT_CODE}  (penanda laporan saja, bukan bagian perintah)`);
 _origLog('==========================================');
 let tempWhitelist = [];
 let isBulkRunning = false;
