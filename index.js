@@ -85,7 +85,7 @@ process.on('unhandledRejection', (err) => {
     _origError('❌ Unhandled Rejection:', m);
 });
 
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, downloadMediaMessage } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const qrcode = require('qrcode-terminal');
 const fs = require('fs');
@@ -129,37 +129,6 @@ const BOT_NUMBER  = (process.argv[6] || '').replace(/[^0-9]/g, '');
 const QR_SHARE_DIR = path.join(__dirname, 'qr_share');
 try { fs.mkdirSync(QR_SHARE_DIR, { recursive: true }); } catch (e) {}
 
-// Folder jembatan antar bot: perintah untuk bot lain dititipkan di sini,
-// lalu diambil dan dikerjakan oleh bot yang bersangkutan.
-const BRIDGE_DIR = path.join(__dirname, 'bridge');
-try { fs.mkdirSync(BRIDGE_DIR, { recursive: true }); } catch (e) {}
-
-// Semua perintah kini bisa lewat jembatan, termasuk .bulk — isi pesan promo
-// (teks/gambar/video/dokumen) ikut dititipkan bersama perintahnya.
-const BRIDGE_BLOCKED = [];
-
-// Mengubah titipan menjadi objek siap kirim untuk sock.sendMessage
-const bangunIsiDariPayload = (p) => {
-    if (!p) return null;
-
-    if (p.tipe === 'text') {
-        return p.teks ? { text: p.teks } : null;
-    }
-
-    // Media: file-nya ada di folder bridge
-    let data;
-    try { data = fs.readFileSync(p.file); } catch (e) { return null; }
-
-    switch (p.tipe) {
-        case 'image':    return { image: data, caption: p.caption || undefined };
-        case 'video':    return { video: data, caption: p.caption || undefined };
-        case 'audio':    return { audio: data, mimetype: p.mimetype || 'audio/mp4', ptt: Boolean(p.ptt) };
-        case 'sticker':  return { sticker: data };
-        case 'document': return { document: data, mimetype: p.mimetype || 'application/octet-stream', fileName: p.fileName || 'file' };
-        default:         return null;
-    }
-};
-
 if (!pureOwner) {
     _origLog('❌ NOMOR OWNER BELUM DIISI!');
     _origLog('   Jalankan: node index.js <folderAuth> <nomorOwner> <kodeBot> "<namaBot>"');
@@ -171,7 +140,7 @@ _origLog('==========================================');
 _origLog(`🤖 ${BOT_TAG}`);
 _origLog(`📁 Folder auth : ${AUTH_FOLDER}`);
 _origLog(`👤 Owner       : ${OWNER_IDS.join(', ')}`);
-_origLog(`🔑 Kode bot    : ${BOT_CODE}  (contoh perintah: .bulk${BOT_CODE})`);
+_origLog(`🔑 Label bot   : ${BOT_CODE}  (penanda laporan saja, bukan bagian perintah)`);
 _origLog('==========================================');
 let tempWhitelist = [];
 let isBulkRunning = false;
@@ -202,7 +171,6 @@ const formatDuration = (ms) => {
 };
 
 let qrWatcher = null;     // Pemantau QR bot lain (dibuat sekali saja)
-let bridgeWatcher = null; // Pemantau titipan perintah antar bot
 
 async function startBot() {
     const { state, saveCreds } = await useMultiFileAuthState(AUTH_FOLDER);
@@ -285,11 +253,6 @@ async function startBot() {
                 _origLog('👀 Memantau QR bot lain untuk dikirim ke WhatsApp Owner.');
             }
 
-            // Mulai memantau titipan perintah dari bot lain (sekali saja)
-            if (!bridgeWatcher) {
-                bridgeWatcher = setInterval(() => { ambilTitipan(); }, 3000);
-                _origLog('🌉 Jembatan antar bot aktif.');
-            }
         }
     });
 
@@ -433,77 +396,16 @@ ${text}` });
         _origLog(`   ↳ teks: "${text.slice(0, 40)}" | id terbaca: [${idPengirim.join(', ')}] | owner? ${isOwner ? 'YA' : 'TIDAK'}`);
 
         // ==========================================
-        // PEMISAH PERINTAH ANTAR BOT
-        // Perintah boleh diberi kode bot di belakang: .bulk2, .status1, info2
-        // - Kode cocok  -> dikerjakan bot ini
-        // - Kode beda   -> diabaikan (itu perintah untuk bot lain)
-        // - Tanpa kode  -> hanya dilayani di chat pribadi, supaya di grup
-        //                  tidak ada dua bot menjawab perintah yang sama
+        // ATURAN PERINTAH
+        // Tiap bot berdiri sendiri: perintah polos (.status, .bulk, dst)
+        // dilayani di chat pribadi bot yang bersangkutan.
+        // Di grup perintah diabaikan, supaya kalau beberapa bot ada di grup
+        // yang sama tidak ada dua bot menjawab pertanyaan yang sama.
         // ==========================================
-        const codeMatch = rawCommand.match(/^(\.?[a-z]+?)([0-9]+)$/);
-        let command = rawCommand;
-        let codeGiven = null;
-
-        if (codeMatch) {
-            command = codeMatch[1];
-            codeGiven = codeMatch[2];
-        }
-
-        // Gerbang kode hanya berlaku untuk perintah, bukan chat biasa dari customer
+        const command = rawCommand;
         const isKnownCommand = command.startsWith('.') || ['info', 'link', 'sayba'].includes(command);
 
-        if (isKnownCommand) {
-            // Perintah untuk bot LAIN -> titipkan lewat jembatan (khusus owner)
-            if (codeGiven !== null && codeGiven !== BOT_CODE) {
-                if (!isOwner) return;
-
-                if (BRIDGE_BLOCKED.includes(command)) {
-                    await sock.sendMessage(sender, { text:
-                        `⚠️ *${command}* tidak bisa dititipkan ke bot lain.`
-                    }, { quoted: msg });
-                    return;
-                }
-
-                try {
-                    // .bulk perlu ikut membawa ISI pesan promo yang Anda reply,
-                    // karena bot tujuan tidak punya akses ke chat ini.
-                    let payload = null;
-
-                    if (command === '.bulk') {
-                        const ctx = extendedMessage && extendedMessage.contextInfo;
-                        if (!ctx || !ctx.quotedMessage) {
-                            await sock.sendMessage(sender, { text: '❌ Reply dulu pesan promonya, baru ketik *.bulk' + codeGiven + '*' }, { quoted: msg });
-                            return;
-                        }
-
-                        payload = await siapkanPayload(ctx.quotedMessage, codeGiven);
-                        if (!payload) {
-                            await sock.sendMessage(sender, { text: '❌ Jenis pesan ini belum didukung untuk dititipkan. Kirim langsung dari chat bot ' + codeGiven + '.' }, { quoted: msg });
-                            return;
-                        }
-                    }
-
-                    const job = {
-                        untuk: codeGiven,
-                        dari: BOT_CODE,
-                        command,
-                        args: args.slice(1),
-                        payload,
-                        waktu: Date.now()
-                    };
-                    const namaFile = `job_${codeGiven}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.json`;
-                    fs.writeFileSync(path.join(BRIDGE_DIR, namaFile), JSON.stringify(job));
-                    await sock.sendMessage(sender, { text: `📨 Perintah *${command}* dititipkan ke bot ${codeGiven}. Balasannya akan dikirim bot tersebut.` }, { quoted: msg });
-                } catch (err) {
-                    await sock.sendMessage(sender, { text: `❌ Gagal menitipkan perintah: ${err?.message || err}` }, { quoted: msg });
-                }
-                return;
-            }
-
-            if (codeGiven === null && isGroup) return;                // Di grup wajib pakai kode
-        } else {
-            command = rawCommand; // Bukan perintah, biarkan apa adanya
-        }
+        if (isKnownCommand && isGroup) return;
 
         // ==========================================
         // .ceklid — SATU-SATUNYA PERINTAH YANG BOLEH DIPAKAI SIAPA SAJA
@@ -630,117 +532,10 @@ ${text}` });
 
         // Semua perintah owner dikumpulkan di sini supaya bisa dipanggil
         // dari dua jalur: chat langsung, dan titipan dari bot lain (jembatan).
-        await runOwnerCommand({ command, args, sender, msg, extendedMessage, viaBridge: false });
+        await runOwnerCommand({ command, args, sender, msg, extendedMessage });
     });
 
-    // ==========================================
-    // JEMBATAN ANTAR BOT — bungkus isi pesan promo agar bisa dititipkan
-    // Teks dikirim apa adanya; media diunduh dulu jadi file di folder bridge.
-    // ==========================================
-    const siapkanPayload = async (quotedMessage, untukKode) => {
-        const q = quotedMessage;
-
-        // 1. Pesan teks
-        const teks = q.conversation || q.extendedTextMessage?.text;
-        if (teks) return { tipe: 'text', teks };
-
-        // 2. Pesan media
-        const jenis = [
-            ['imageMessage', 'image', 'jpg'],
-            ['videoMessage', 'video', 'mp4'],
-            ['audioMessage', 'audio', 'mp3'],
-            ['stickerMessage', 'sticker', 'webp'],
-            ['documentMessage', 'document', 'bin']
-        ];
-
-        for (const [kunci, tipe, ext] of jenis) {
-            const isi = q[kunci];
-            if (!isi) continue;
-
-            try {
-                const buffer = await downloadMediaMessage(
-                    { key: {}, message: { [kunci]: isi } },
-                    'buffer',
-                    {}
-                );
-
-                const namaFile = path.join(BRIDGE_DIR, `media_${untukKode}_${Date.now()}.${ext}`);
-                fs.writeFileSync(namaFile, buffer);
-
-                return {
-                    tipe,
-                    file: namaFile,
-                    caption: isi.caption || '',
-                    mimetype: isi.mimetype || '',
-                    fileName: isi.fileName || `promo.${ext}`,
-                    ptt: Boolean(isi.ptt)
-                };
-            } catch (err) {
-                _origError('⚠️ Gagal mengunduh media untuk titipan:', err?.message || err);
-                return null;
-            }
-        }
-
-        return null; // Jenis lain belum didukung
-    };
-
-    // ==========================================
-    // JEMBATAN ANTAR BOT — ambil perintah yang dititipkan bot lain
-    // ==========================================
-    const ambilTitipan = async () => {
-        let files;
-        try { files = fs.readdirSync(BRIDGE_DIR); } catch (e) { return; }
-
-        for (const f of files) {
-            // Buang file media nyasar yang sudah lebih dari 30 menit
-            if (f.startsWith('media_')) {
-                try {
-                    const s = fs.statSync(path.join(BRIDGE_DIR, f));
-                    if (Date.now() - s.mtimeMs > 1800000) fs.unlinkSync(path.join(BRIDGE_DIR, f));
-                } catch (e) {}
-                continue;
-            }
-
-            if (!f.startsWith(`job_${BOT_CODE}_`) || !f.endsWith('.json')) continue;
-
-            const full = path.join(BRIDGE_DIR, f);
-            let job;
-            try {
-                job = JSON.parse(fs.readFileSync(full, 'utf8'));
-                fs.unlinkSync(full); // Hapus dulu supaya tidak dikerjakan dua kali
-            } catch (e) { continue; }
-
-            // Titipan basi (lebih dari 5 menit) diabaikan
-            if (Date.now() - (job.waktu || 0) > 300000) {
-                _origLog(`⏭️ Titipan ${job.command} dilewati (kedaluwarsa).`);
-                continue;
-            }
-
-            _origLog(`📥 Menerima titipan dari bot ${job.dari}: ${job.command}`);
-            await reportOwner(`📥 *TITIPAN DARI BOT ${job.dari}*\nMengerjakan: *${job.command}*`);
-
-            try {
-                await runOwnerCommand({
-                    command: job.command,
-                    args: [job.command, ...(job.args || [])],
-                    sender: ownerJid,     // Balasan dikirim ke chat owner di bot ini
-                    msg: null,            // Tidak ada pesan asli untuk di-reply
-                    extendedMessage: null,
-                    viaBridge: true,
-                    bridgePayload: job.payload || null
-                });
-            } catch (err) {
-                await reportOwner(`❌ Titipan *${job.command}* gagal: ${err?.message || err}`);
-            }
-
-            // File media titipan sudah tidak diperlukan
-            if (job.payload && job.payload.file) {
-                try { fs.unlinkSync(job.payload.file); } catch (e) {}
-            }
-        }
-    };
-
-    const runOwnerCommand = async ({ command, args, sender, msg, extendedMessage, viaBridge, bridgePayload }) => {
+    const runOwnerCommand = async ({ command, args, sender, msg, extendedMessage }) => {
             // Info website (sekarang hanya dibalas ke owner)
             if (['info', 'link', 'sayba'].includes(command)) {
                 await sock.sendMessage(sender, { text: 'Kunjungi website resmi kami di: https://sayba.id' }, (msg ? { quoted: msg } : {}));
@@ -842,34 +637,21 @@ ${text}` });
                 if (isBulkRunning) return await sock.sendMessage(sender, { text: '⚠️ Masih ada proses bulk yang berjalan. Tunggu selesai, atau ketik *.stopbulk*.' }, (msg ? { quoted: msg } : {}));
                 if (tempWhitelist.length === 0) return await sock.sendMessage(sender, { text: '❌ Memori kosong!' }, (msg ? { quoted: msg } : {}));
 
-                // Isi yang akan dikirim: dari pesan yang di-reply (chat langsung),
-                // atau dari titipan bot lain (jembatan).
-                let isiKiriman = null;
+                // Isi yang dikirim diambil dari pesan yang Anda reply
+                const isReply = extendedMessage && extendedMessage.contextInfo && extendedMessage.contextInfo.stanzaId;
+                if (!isReply) return await sock.sendMessage(sender, { text: '❌ Anda harus me-reply pesan!' }, (msg ? { quoted: msg } : {}));
 
-                if (viaBridge) {
-                    if (!bridgePayload) {
-                        return await reportOwner('❌ Titipan *.bulk* tidak membawa isi pesan.');
+                const quotedContext = extendedMessage.contextInfo;
+                const isiKiriman = {
+                    forward: {
+                        key: {
+                            remoteJid: sender,
+                            id: quotedContext.stanzaId,
+                            participant: quotedContext.participant
+                        },
+                        message: quotedContext.quotedMessage
                     }
-                    isiKiriman = bangunIsiDariPayload(bridgePayload);
-                    if (!isiKiriman) {
-                        return await reportOwner(`❌ Jenis pesan *${bridgePayload.tipe}* tidak didukung untuk titipan.`);
-                    }
-                } else {
-                    const isReply = extendedMessage && extendedMessage.contextInfo && extendedMessage.contextInfo.stanzaId;
-                    if (!isReply) return await sock.sendMessage(sender, { text: '❌ Anda harus me-reply pesan!' }, (msg ? { quoted: msg } : {}));
-
-                    const quotedContext = extendedMessage.contextInfo;
-                    isiKiriman = {
-                        forward: {
-                            key: {
-                                remoteJid: sender,
-                                id: quotedContext.stanzaId,
-                                participant: quotedContext.participant
-                            },
-                            message: quotedContext.quotedMessage
-                        }
-                    };
-                }
+                };
 
                 // Saring nomor yang SUDAH pernah dikirimi pada whitelist ini (anti duplicate send)
                 const targets = [];
