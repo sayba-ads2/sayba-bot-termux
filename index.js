@@ -1,3 +1,58 @@
+// ==========================================
+// PEREDAM LOG BAWAAN LIBSIGNAL
+// Pesan "Bad MAC" / "Failed to decrypt" itu normal & sembuh sendiri
+// (sesi lama ditutup, sesi baru dipakai). Hanya disembunyikan dari layar,
+// dihitung, lalu bisa dicek kapan saja dengan perintah .status
+// ==========================================
+const noisyPatterns = [
+    'Failed to decrypt',
+    'Bad MAC',
+    'Closing session',
+    'Closing open session',
+    'Session error',
+    'SessionEntry',
+    'No session record',
+    'MessageCounterError',
+    'Key used already or never filled'
+];
+
+let decryptErrorCount = 0;
+let lastDecryptError = null;
+
+const makeQuietLogger = (original) => (...args) => {
+    const text = args.map(a => {
+        if (typeof a === 'string') return a;
+        if (a instanceof Error) return a.message;
+        return '';
+    }).join(' ');
+
+    if (noisyPatterns.some(p => text.includes(p))) {
+        decryptErrorCount++;
+        lastDecryptError = new Date().toLocaleString('id-ID');
+        return; // Ditelan, tidak ditampilkan
+    }
+    original(...args);
+};
+
+const _origLog = console.log;
+const _origError = console.error;
+const _origWarn = console.warn;
+console.log = makeQuietLogger(_origLog);
+console.error = makeQuietLogger(_origError);
+console.warn = makeQuietLogger(_origWarn);
+
+// Jaring pengaman: error yang tidak tertangkap jangan sampai mematikan bot
+process.on('uncaughtException', (err) => {
+    const m = err?.message || String(err);
+    if (noisyPatterns.some(p => m.includes(p))) { decryptErrorCount++; return; }
+    _origError('❌ Uncaught Exception:', m);
+});
+process.on('unhandledRejection', (err) => {
+    const m = err?.message || String(err);
+    if (noisyPatterns.some(p => m.includes(p))) { decryptErrorCount++; return; }
+    _origError('❌ Unhandled Rejection:', m);
+});
+
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const qrcode = require('qrcode-terminal');
@@ -345,6 +400,23 @@ async function startBot() {
             if (!isBulkRunning) return await sock.sendMessage(sender, { text: 'ℹ️ Tidak ada proses bulk yang berjalan.' }, { quoted: msg });
             isBulkRunning = false;
             await sock.sendMessage(sender, { text: '🛑 Perintah berhenti diterima. Bulk akan berhenti setelah jeda yang sedang berjalan selesai.' }, { quoted: msg });
+        }
+
+        if (command === '.status') {
+            const upSec = Math.floor(process.uptime());
+            const jam = Math.floor(upSec / 3600);
+            const menit = Math.floor((upSec % 3600) / 60);
+
+            let statusText = `📊 *STATUS BOT SAYBA*\n\n`;
+            statusText += `🟢 Aktif: ${jam} jam ${menit} menit\n`;
+            statusText += `📋 Whitelist di memori: ${tempWhitelist.length} nomor\n`;
+            statusText += `📨 Sudah dikirimi (sesi ini): ${sentHistory.size} nomor\n`;
+            statusText += `⚙️ Bulk berjalan: ${isBulkRunning ? 'YA' : 'tidak'}\n`;
+            statusText += `🔇 Log enkripsi diredam: ${decryptErrorCount}x`;
+            if (lastDecryptError) statusText += `\n🕐 Terakhir: ${lastDecryptError}`;
+            statusText += `\n\n_Log enkripsi yang diredam itu normal dan sembuh sendiri._`;
+
+            await sock.sendMessage(sender, { text: statusText }, { quoted: msg });
         }
     });
 }
