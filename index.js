@@ -58,6 +58,17 @@ async function startBot() {
         }
     });
 
+    const ownerJid = pureOwner + "@s.whatsapp.net";
+
+    // Semua laporan progres bulk dikirim ke chat pribadi Owner
+    const reportOwner = async (text) => {
+        try {
+            await sock.sendMessage(ownerJid, { text });
+        } catch (err) {
+            console.log('⚠️ Gagal mengirim laporan ke Owner:', err?.message || err);
+        }
+    };
+
     sock.ev.on('messages.upsert', async m => {
         const msg = m.messages[0];
         if(!msg.message || msg.key.fromMe) return;
@@ -101,7 +112,6 @@ async function startBot() {
         if (!isOwner) {
             // Jika ada orang chat pribadi ke bot, teruskan ke Owner
             if (!isGroup) {
-                const ownerJid = pureOwner + "@s.whatsapp.net";
                 await sock.sendMessage(ownerJid, { text: `🔔 *PESAN DARI CUSTOMER MASUK KE BOT*\nPengirim: https://wa.me/${pureParticipant}` });
                 await sock.sendMessage(ownerJid, { forward: msg });
             }
@@ -258,6 +268,20 @@ async function startBot() {
                 const batch = targets.slice(b * BATCH_SIZE, (b + 1) * BATCH_SIZE);
                 console.log(`\n📦 === BATCH ${b + 1}/${totalBatch} (${batch.length} nomor) ===`);
 
+                // LAPOR KE OWNER: batch akan dijalankan
+                const batchStart = new Date().toLocaleTimeString('id-ID');
+                let daftarTarget = batch.map((jid, idx) => `${idx + 1}. ${jid.split('@')[0]}`).join('\n');
+                await reportOwner(
+                    `▶️ *BATCH ${b + 1}/${totalBatch} AKAN DIJALANKAN*\n` +
+                    `🕐 Mulai: ${batchStart}\n` +
+                    `👥 Jumlah target: ${batch.length} nomor\n` +
+                    `⏱️ Jeda antar nomor: ${MIN_MSG_DELAY_SEC}-${MAX_MSG_DELAY_SEC} detik\n\n` +
+                    `*Daftar target:*\n${daftarTarget}`
+                );
+
+                let batchSuccess = 0;
+                let batchFail = 0;
+
                 for (let i = 0; i < batch.length; i++) {
                     if (!isBulkRunning) { stopped = true; break; }
 
@@ -266,9 +290,11 @@ async function startBot() {
                         await sock.sendMessage(targetJid, { forward: messageToForward });
                         sentHistory.add(targetJid); // Tandai supaya tidak dikirimi lagi
                         successCount++;
+                        batchSuccess++;
                         console.log(`   [B${b + 1}] ✅ Terkirim ke ${targetJid}`);
                     } catch (err) {
                         failCount++;
+                        batchFail++;
                         console.log(`   [B${b + 1}] ❌ Gagal kirim ke ${targetJid}`);
                     }
 
@@ -280,21 +306,37 @@ async function startBot() {
                     }
                 }
 
-                if (stopped || !isBulkRunning) { stopped = true; break; }
+                const isLastBatch = (b === totalBatch - 1);
+                const willStop = stopped || !isBulkRunning;
+                const batchDelay = (!willStop && !isLastBatch) ? randomBatchDelayMs() : 0;
+
+                // LAPOR KE OWNER: batch selesai dijalankan
+                let doneText = `${willStop ? '🛑' : '✅'} *BATCH ${b + 1}/${totalBatch} SELESAI*\n`;
+                doneText += `🕐 Selesai: ${new Date().toLocaleTimeString('id-ID')}\n`;
+                doneText += `✅ Berhasil: ${batchSuccess} | ❌ Gagal: ${batchFail}\n`;
+                doneText += `📊 Total keseluruhan: ${successCount}/${targets.length} terkirim\n`;
+                if (willStop) {
+                    doneText += `\n🛑 Proses dihentikan oleh perintah *.stopbulk*.`;
+                } else if (isLastBatch) {
+                    doneText += `\n🎉 Ini batch terakhir.`;
+                } else {
+                    doneText += `\n😴 Istirahat ${formatDuration(batchDelay)} sebelum *Batch ${b + 2}/${totalBatch}*.`;
+                }
+                await reportOwner(doneText);
+
+                if (willStop) { stopped = true; break; }
 
                 // Jeda acak antar batch (batch terakhir tidak perlu)
-                if (b < totalBatch - 1) {
-                    const batchDelay = randomBatchDelayMs();
+                if (!isLastBatch) {
                     console.log(`😴 Batch ${b + 1} selesai. Istirahat ${formatDuration(batchDelay)}...`);
-                    await sock.sendMessage(sender, { text: `📦 Batch ${b + 1}/${totalBatch} selesai (${successCount} terkirim).\n😴 Istirahat ${formatDuration(batchDelay)} sebelum batch berikutnya.` });
                     await sleep(batchDelay);
                 }
             }
 
             if (stopped) {
-                await sock.sendMessage(sender, { text: `🛑 Bulk dihentikan.\nBerhasil: ${successCount} | Gagal: ${failCount} | Sisa: ${targets.length - successCount - failCount} target.\n\nBuat whitelist baru (*.setwhitelist*) untuk melanjutkan — nomor yang sudah terkirim otomatis dilewati.` });
+                await reportOwner(`🛑 *BULK DIHENTIKAN*\nBerhasil: ${successCount} | Gagal: ${failCount} | Sisa: ${targets.length - successCount - failCount} target.\n\nBuat whitelist baru (*.setwhitelist*) untuk melanjutkan — nomor yang sudah terkirim otomatis dilewati.`);
             } else {
-                await sock.sendMessage(sender, { text: `✅ Selesai! ${totalBatch} batch tuntas.\nBerhasil: ${successCount} target. Gagal: ${failCount} target.\n\nMemori sudah dikosongkan. Untuk kirim lagi, buat whitelist baru dengan *.setwhitelist*.` }, { quoted: msg });
+                await reportOwner(`🎉 *SEMUA BATCH SELESAI*\n${totalBatch} batch tuntas.\n✅ Berhasil: ${successCount} target\n❌ Gagal: ${failCount} target\n🕐 Selesai: ${new Date().toLocaleTimeString('id-ID')}\n\nMemori sudah dikosongkan. Untuk kirim lagi, buat whitelist baru dengan *.setwhitelist*.`);
             }
             isBulkRunning = false;
         }
