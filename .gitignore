@@ -35,3 +35,5 @@ Thumbs.db
 # CATATAN: ecosystem.config.js SENGAJA ikut diunggah
 # karena repo ini private dan nomornya milik sendiri.
 # ==========================================
+
+bridge/
