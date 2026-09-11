@@ -2,7 +2,10 @@ const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = requi
 const pino = require('pino');
 const qrcode = require('qrcode-terminal');
 
-const pureOwner = "268697650352299";
+const pureOwner = "6287803445749";
+
+// Memori sementara untuk menyimpan Whitelist
+let tempWhitelist = [];
 
 async function startBot() {
     const { state, saveCreds } = await useMultiFileAuthState('auth_sayba');
@@ -25,11 +28,9 @@ async function startBot() {
 
         if(connection === 'close') {
             const shouldReconnect = lastDisconnect.error?.output?.statusCode !== DisconnectReason.loggedOut;
-            console.log('Koneksi terputus, mencoba reconnect...');
             if(shouldReconnect) startBot();
         } else if(connection === 'open') {
             console.log('✅ Bot Sayba berhasil terhubung ke WhatsApp!');
-            console.log('--- MENUNGGU PESAN MASUK ---');
         }
     });
 
@@ -38,19 +39,11 @@ async function startBot() {
         if(!msg.message || msg.key.fromMe) return;
 
         const sender = msg.key.remoteJid;
-        const isGroup = sender.endsWith('@g.us');
-        const participant = isGroup ? msg.key.participant : sender;
+        const participant = sender.endsWith('@g.us') ? msg.key.participant : sender;
         const pureParticipant = participant.split(':')[0].split('@')[0];
-
-        // --- CCTV DETEKTOR ---
-        console.log(`\n[CCTV] Ada pesan masuk dari nomor: ${pureParticipant}`);
-        console.log(`[CCTV] Apakah ini nomor owner? ${pureParticipant === pureOwner ? "YA" : "BUKAN"}`);
-        // ----------------------
-
-        if (pureParticipant !== pureOwner) {
-            console.log(`[CCTV] Ditolak! Karena nomor tidak cocok dengan owner.`);
-            return;
-        }
+        
+        // HANYA merespon Owner
+        if (pureParticipant !== pureOwner) return; 
 
         let text = "";
         let extendedMessage = null;
@@ -66,24 +59,22 @@ async function startBot() {
             extendedMessage = eph.extendedTextMessage;
         }
 
-        console.log(`[CCTV] Teks yang terbaca oleh sistem: "${text}"`);
-
-        if (!text) return;
+        if (!text) return; 
 
         const args = text.trim().split(/ +/);
         const command = args[0].toLowerCase();
 
+        // 1. AUTO RESPON
         if (['info', 'link', 'sayba'].includes(command)) {
-            console.log("[CCTV] Perintah Auto-Respon tereksekusi!");
             await sock.sendMessage(sender, { text: 'Kunjungi website resmi kami di: https://sayba.id' }, { quoted: msg });
         }
 
+        // =====================================
+        // 2. MENGAMBIL NOMOR GRUP (ANTI LID)
+        // =====================================
         if (command === '.getmembers') {
             const groupName = args.slice(1).join(" ");
-            if (!groupName) {
-                await sock.sendMessage(sender, { text: '❌ Ketik nama grupnya.' }, { quoted: msg });
-                return;
-            }
+            if (!groupName) return await sock.sendMessage(sender, { text: '❌ Ketik nama grupnya.' }, { quoted: msg });
 
             const groups = await sock.groupFetchAllParticipating();
             let targetGroup = null;
@@ -95,52 +86,93 @@ async function startBot() {
                 }
             }
 
-            if (!targetGroup) {
-                await sock.sendMessage(sender, { text: `❌ Grup "${groupName}" tidak ditemukan.` }, { quoted: msg });
-                return;
-            }
+            if (!targetGroup) return await sock.sendMessage(sender, { text: `❌ Grup tidak ditemukan.` }, { quoted: msg });
 
             const members = targetGroup.participants;
-            let memberList = `*Daftar Nomor Anggota Grup: ${groupName}*\nTotal: ${members.length} member\n\n`;
+            let countRealNumber = 0;
+            let countLID = 0;
+            let memberList = "";
+
+            // Menyaring nomor asli (whatsapp.net) vs nomor privasi (lid)
             members.forEach(mem => {
-                memberList += `${mem.id.split('@')[0]}\n`;
+                if (mem.id.endsWith('@s.whatsapp.net')) {
+                    memberList += `${mem.id.split('@')[0]}\n`;
+                    countRealNumber++;
+                } else if (mem.id.endsWith('@lid')) {
+                    countLID++;
+                }
             });
 
-            await sock.sendMessage(sender, { text: memberList }, { quoted: msg });
+            let replyText = `*Daftar Nomor Anggota Grup: ${groupName}*\n`;
+            replyText += `Berhasil disedot: ${countRealNumber} nomor asli\n`;
+            if (countLID > 0) {
+                replyText += `Gagal disedot: ${countLID} nomor (disembunyikan privasi WA)\n`;
+            }
+            replyText += `\n${memberList}`;
+
+            await sock.sendMessage(sender, { text: replyText }, { quoted: msg });
         }
 
-        if (command === '.bulk') {
-            const broadcastMessage = args.slice(1).join(" ");
-            const isReply = extendedMessage && extendedMessage.contextInfo && extendedMessage.contextInfo.quotedMessage;
+        // 3. MEMASUKKAN WHITELIST
+        if (command === '.setwhitelist') {
+            const numbersText = args.slice(1).join(" ");
+            const rawNumbers = numbersText.split(/[\n,]/).map(n => n.trim()).filter(n => n.length > 8);
             
-            if (!isReply) {
-                await sock.sendMessage(sender, { text: '❌ Anda harus me-reply pesan berisi whitelist.' }, { quoted: msg });
+            if (rawNumbers.length === 0) {
+                await sock.sendMessage(sender, { text: '❌ Format salah. Contoh:\n.setwhitelist 0812.., 0813..' }, { quoted: msg });
                 return;
             }
-            if (!broadcastMessage) return;
 
-            const quotedMsg = extendedMessage.contextInfo.quotedMessage;
-            const quotedText = quotedMsg.conversation || quotedMsg.extendedTextMessage?.text || quotedMsg.ephemeralMessage?.message?.conversation || quotedMsg.ephemeralMessage?.message?.extendedTextMessage?.text || "";
-
-            const rawNumbers = quotedText.split(/[\n,]/).map(n => n.trim()).filter(n => n.length > 8);
-            if (rawNumbers.length === 0) return;
-
-            await sock.sendMessage(sender, { text: `⏳ Memulai pengiriman massal ke ${rawNumbers.length} nomor...` }, { quoted: msg });
-
-            let successCount = 0;
+            tempWhitelist = []; // Reset memori
             for (let num of rawNumbers) {
                 let formattedNum = num.replace(/[^0-9]/g, '');
                 if (formattedNum.startsWith('0')) formattedNum = '62' + formattedNum.substring(1);
                 formattedNum += '@s.whatsapp.net';
-
-                try {
-                    await sock.sendMessage(formattedNum, { text: broadcastMessage });
-                    successCount++;
-                    await new Promise(resolve => setTimeout(resolve, 3000)); 
-                } catch (err) {}
+                tempWhitelist.push(formattedNum);
             }
 
-            await sock.sendMessage(sender, { text: `✅ Berhasil mengirim pesan promosi ke ${successCount} nomor.` }, { quoted: msg });
+            await sock.sendMessage(sender, { text: `✅ Berhasil menyimpan *${tempWhitelist.length} nomor* ke memori Whitelist.\n\nSekarang, silakan cari pesan yang ingin Anda teruskan (teks/gambar/file), lalu Reply pesan tersebut dengan perintah: *.bulk*` }, { quoted: msg });
+        }
+
+        // 4. FORWARD KE WHITELIST
+        if (command === '.bulk') {
+            if (tempWhitelist.length === 0) {
+                await sock.sendMessage(sender, { text: '❌ Memori Whitelist kosong! Silakan isi dulu dengan perintah .setwhitelist' }, { quoted: msg });
+                return;
+            }
+
+            const isReply = extendedMessage && extendedMessage.contextInfo && extendedMessage.contextInfo.stanzaId;
+            if (!isReply) {
+                await sock.sendMessage(sender, { text: '❌ Anda harus *me-reply* pesan yang ingin diteruskan.' }, { quoted: msg });
+                return;
+            }
+
+            const quotedContext = extendedMessage.contextInfo;
+            const messageToForward = {
+                key: {
+                    remoteJid: sender,
+                    id: quotedContext.stanzaId,
+                    participant: quotedContext.participant
+                },
+                message: quotedContext.quotedMessage
+            };
+
+            await sock.sendMessage(sender, { text: `⏳ Memulai *Forward* pesan ke ${tempWhitelist.length} nomor whitelist... (Jeda 3 detik antar pesan)` }, { quoted: msg });
+
+            let successCount = 0;
+            for (let targetJid of tempWhitelist) {
+                try {
+                    await sock.sendMessage(targetJid, { forward: messageToForward });
+                    successCount++;
+                    await new Promise(resolve => setTimeout(resolve, 3000)); 
+                } catch (err) {
+                    console.log(`Gagal kirim ke ${targetJid}`);
+                }
+            }
+
+            await sock.sendMessage(sender, { text: `✅ Selesai! Pesan berhasil diteruskan ke ${successCount} nomor.\n\n*(Memori Whitelist sekarang telah dikosongkan kembali untuk sesi berikutnya).*` }, { quoted: msg });
+            
+            tempWhitelist = [];
         }
     });
 }
