@@ -624,6 +624,37 @@ ${text}` });
         // Membalas pengirim dengan LID / nomor miliknya sendiri.
         // Diletakkan SEBELUM gerbang owner, jadi orang lain pun dibalas.
         // ==========================================
+        // ==========================================
+        // .tes — kirim ke SEMUA kemungkinan alamat owner
+        // Yang sampai di HP Anda berarti alamat yang benar.
+        // ==========================================
+        if (command === '.tes' && isOwner) {
+            const nomorDia = idPengirim.map(nomorOwnerDari).find(Boolean);
+
+            const kandidat = [
+                ['A. alamat chat asli', sender],
+                ['B. nomor telepon', nomorDia ? `${nomorDia}@s.whatsapp.net` : null],
+                ['C. alamat LID', pureOwner ? `${pureOwner}@lid` : null]
+            ].filter(([, jid]) => jid);
+
+            // Buang alamat kembar
+            const sudah = new Set();
+            for (const [label, jid] of kandidat) {
+                if (sudah.has(jid)) continue;
+                sudah.add(jid);
+                try {
+                    const r = await sock.sendMessage(jid, {
+                        text: `🧪 UJI ALAMAT — ${label}\n\nBot: ${BOT_NAME}\nDikirim ke: ${jid}\n\nKalau pesan ini Anda terima, alamat inilah yang berfungsi.`
+                    });
+                    _origLog(`   🧪 [${BOT_CODE}] uji "${label}" -> ${jid} | id: ${r?.key?.id || '-'}`);
+                } catch (err) {
+                    _origError(`   🧪 [${BOT_CODE}] uji "${label}" -> ${jid} GAGAL: ${err?.message || err}`);
+                }
+                await sleep(1500);
+            }
+            return;
+        }
+
         if (command === '.ceklid') {
             const k = msg.key;
 
