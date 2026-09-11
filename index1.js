@@ -98,10 +98,8 @@ let qrImage = null;
 try { qrImage = require('qrcode'); } catch (e) { /* opsional */ }
 
 // ==========================================================
-//  PENGATURAN — SEMUA DIATUR DI SINI
-//
-//  Jalankan:  node index.js 1     (untuk bot 1)
-//             node index.js 2     (untuk bot 2)
+//  PENGATURAN BOT 1 — SEMUA DIATUR DI SINI
+//  File ini berdiri sendiri. Jalankan langsung: node index1.js
 // ==========================================================
 
 // Identitas Anda sebagai owner. Boleh lebih dari satu.
@@ -129,81 +127,35 @@ const nomorOwnerDari = (id) => {
     return ketemu ? ketemu.nomor : null;
 };
 
-// Daftar bot. Tambah bot baru cukup menyalin satu blok.
-const DAFTAR_BOT = {
-    '1': {
-        nama:   'Sayba Satu',
-        auth:   'auth_sayba',
-        nomor:  '628979602864',     // nomor WA bot ini (untuk kode pairing)
-        grup:   ['BOT JAYA']        // grup tempat perintah boleh dipakai
-    },
-    '2': {
-        nama:   'Sayba Dua',
-        auth:   'auth_sayba2',
-        nomor:  '6281332611714',    // 081332611714
-        grup:   ['BOT JAYA']
-    }
-};
+// ----------------------------------------------------------
+// Identitas bot ini
+// ----------------------------------------------------------
+const BOT_CODE   = '1';
+const BOT_NAME   = 'Sayba Satu';
+const AUTH_FOLDER = 'auth_sayba';
+const BOT_NUMBER  = '628979602864';   // nomor WA bot ini, untuk kode pairing (kosongkan '' untuk QR)
+const GRUP_IZIN_ASLI = ["BOT JAYA"]; // nama grup tempat perintah boleh dipakai di sini
 
-// Catatan tentang "grup":
-//   - Kosongkan ([]) kalau bot itu tidak boleh diperintah dari grup mana pun.
+// Catatan tentang GRUP_IZIN_ASLI:
+//   - Kosongkan ([]) kalau bot ini tidak boleh diperintah dari grup mana pun.
 //   - Nama harus PERSIS sama dengan nama grup di WhatsApp (huruf besar/kecil
 //     tidak masalah). Nama grup yang terbaca ditampilkan di log Termux.
-//   - Kalau kedua bot ada di grup yang sama DAN sama-sama mencantumkan grup
-//     itu, keduanya akan menjawab. Hapus dari salah satu kalau tidak mau.
 //   - Perintah di grup tetap hanya dilayani untuk owner.
 
 // ==========================================================
 //  Di bawah ini tidak perlu diubah
 // ==========================================================
-// Bot mana yang dijalankan, dicari berurutan dari beberapa sumber supaya
-// tidak mudah salah — pm2 kadang menelan argumen setelah nama aplikasi.
-//   1. Variabel lingkungan   : BOT=2 node index.js
-//   2. Argumen               : node index.js 2
-//   3. Nama aplikasi di pm2  : pm2 start index.js --name bot2
-const bersihkan = (v) => String(v || '').replace(/[^a-z0-9]/gi, '').toLowerCase();
-
-// Ubah apa pun ("2", "bot2", "--name") jadi kode bot yang benar-benar ada
-const keDaftar = (v) => {
-    const b = bersihkan(v);
-    if (!b) return '';
-    if (DAFTAR_BOT[b]) return b;                       // sudah pas: "2"
-    const angka = bersihkan(b.match(/[0-9]+/)?.[0]);   // "bot2" -> "2"
-    return DAFTAR_BOT[angka] ? angka : '';
-};
-
-const dariArgumen = process.argv.slice(2).map(keDaftar).find(Boolean) || '';
-const dariNamaPm2 = keDaftar(process.env.name);
-
-const BOT_CODE = keDaftar(process.env.BOT) || dariArgumen || dariNamaPm2 || '1';
-const KONFIG   = DAFTAR_BOT[BOT_CODE];
-
-if (!KONFIG) {
-    _origLog('==========================================');
-    _origLog(`❌ Bot "${BOT_CODE}" tidak ada di DAFTAR_BOT.`);
-    _origLog(`   Pilihan tersedia : ${Object.keys(DAFTAR_BOT).join(', ')}`);
-    _origLog(`   Argumen diterima : ${JSON.stringify(process.argv.slice(2))}`);
-    _origLog(`   Nama pm2         : ${process.env.name || '-'}`);
-    _origLog('');
-    _origLog('   Jalankan salah satu cara ini:');
-    _origLog('     node index.js 2');
-    _origLog('     BOT=2 node index.js');
-    _origLog('     pm2 start index.js --name bot2');
-    _origLog('==========================================');
-
-    // Berhenti dengan kode 0 supaya pm2 TIDAK menghidupkan ulang terus-menerus
-    process.exit(0);
-}
-
-const AUTH_FOLDER = KONFIG.auth;
-const BOT_NAME    = KONFIG.nama;
-const GRUP_IZIN   = (KONFIG.grup || []).map(g => String(g).trim().toLowerCase());
+const BOT_TAG = `[BOT-${BOT_CODE.toUpperCase()} ${BOT_NAME}]`;
+const GRUP_IZIN = GRUP_IZIN_ASLI.map(g => String(g).trim().toLowerCase());
 const grupDiizinkan = (nama) => GRUP_IZIN.includes(String(nama || '').trim().toLowerCase());
-const BOT_NUMBER  = (KONFIG.nomor || '').replace(/[^0-9]/g, '');
-const BOT_TAG     = `[BOT-${BOT_CODE.toUpperCase()} ${BOT_NAME}]`;
 
 const pureOwner = OWNER_IDS[0] || '';   // Dipakai untuk alamat kirim laporan
 const isOwnerId = (id) => OWNER_IDS.includes(id);
+
+// Kode bot lain yang beroperasi bersamaan (di HP/grup yang sama), supaya
+// perintah seperti .status1 / .status2 bisa dibedakan dari command biasa.
+// Tambahkan kode di sini kalau menambah bot ke-3, ke-4, dst.
+const KODE_BOT_DIKENAL = ['1', '2'];
 
 // Folder titipan QR antar bot: bot yang sudah online akan mengirim QR
 // milik bot lain ke WhatsApp Owner sebagai gambar.
@@ -597,7 +549,7 @@ ${text}` });
         let command = rawCommand;
         let kodeDiminta = null;
 
-        if (cocokKode && DAFTAR_BOT[cocokKode[2]]) {
+        if (cocokKode && KODE_BOT_DIKENAL.includes(cocokKode[2])) {
             command = cocokKode[1];
             kodeDiminta = cocokKode[2];
         }
@@ -610,7 +562,7 @@ ${text}` });
         }
 
         // Perintah di grup hanya dilayani kalau nama grupnya terdaftar
-        // pada "grup" milik bot ini di DAFTAR_BOT.
+        // pada "grup" milik bot ini (lihat GRUP_IZIN_ASLI di atas).
         if (isKnownCommand && isGroup) {
             const namaGrupIni = await ambilNamaGrup(sender);
             _origLog(`   👥 Perintah dari grup: "${namaGrupIni}" | diizinkan? ${grupDiizinkan(namaGrupIni) ? 'YA' : 'TIDAK'}`);
