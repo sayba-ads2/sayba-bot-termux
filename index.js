@@ -294,6 +294,24 @@ async function startBot() {
 
     sock.ev.on('creds.update', saveCreds);
 
+    // ==========================================
+    // PENCATAT HASIL KIRIM
+    // Setiap pengiriman dicatat berhasil atau gagal beserta alasannya,
+    // supaya ketahuan kalau WhatsApp menolak pesan bot ini.
+    // ==========================================
+    const _kirimAsli = sock.sendMessage.bind(sock);
+    sock.sendMessage = async (jid, isi, opsi) => {
+        const jenis = Object.keys(isi || {})[0] || '?';
+        try {
+            const hasil = await _kirimAsli(jid, isi, opsi);
+            _origLog(`   📤 [${BOT_CODE}] kirim ${jenis} ke ${jid} → OK (id: ${hasil?.key?.id || '-'})`);
+            return hasil;
+        } catch (err) {
+            _origError(`   ❌ [${BOT_CODE}] GAGAL kirim ${jenis} ke ${jid} → ${err?.message || err}`);
+            throw err;
+        }
+    };
+
     // === LOGIN PAKAI KODE PAIRING (tanpa QR) ===
     if (usePairingCode) {
         const mintaKode = async (sisaPercobaan = 5) => {
