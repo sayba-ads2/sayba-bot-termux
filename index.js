@@ -293,7 +293,20 @@ async function startBot() {
         }
     });
 
-    const ownerJid = pureOwner + "@s.whatsapp.net";
+    // Alamat owner: LID dan nomor telepon punya akhiran berbeda.
+    // Nomor telepon Indonesia diawali 62 dan panjangnya <= 15 digit;
+    // LID jauh lebih panjang dan bukan nomor yang bisa dihubungi biasa.
+    const tebakJid = (id) => {
+        if (!id) return null;
+        const sepertiNomor = /^[1-9][0-9]{7,14}$/.test(id) && id.startsWith('62');
+        return sepertiNomor ? `${id}@s.whatsapp.net` : `${id}@lid`;
+    };
+
+    // Pakai nomor telepon kalau ada; kalau tidak, pakai LID
+    const ownerNomor = OWNER_IDS.find(id => id.startsWith('62'));
+    let ownerJid = tebakJid(ownerNomor || pureOwner);
+
+    _origLog(`📮 Alamat laporan owner: ${ownerJid}`);
 
     // Semua laporan progres bulk dikirim ke chat pribadi Owner
     const reportOwner = async (text) => {
@@ -362,6 +375,14 @@ ${text}` });
         // Log diagnosa: bukti bahwa pesan benar-benar sampai ke bot ini
         _origLog(`📩 [${BOT_CODE}] pesan masuk | dari: ${msg?.key?.remoteJid || '?'} | fromMe: ${msg?.key?.fromMe} | jenis: ${msg?.message ? Object.keys(msg.message)[0] : 'kosong'}`);
 
+        // Pesan yang gagal didekripsi datang dalam keadaan kosong.
+        // WhatsApp akan mengirim ulang otomatis setelah sesi diperbarui.
+        if (!msg.message && !msg.key.fromMe) {
+            decryptErrorCount++;
+            lastDecryptError = new Date().toLocaleString('id-ID');
+            _origLog(`   ⚠️ Pesan tidak bisa dibuka (sesi belum cocok). Tunggu kiriman ulang, atau minta pengirim kirim pesan baru.`);
+        }
+
         if(!msg.message || msg.key.fromMe) return;
 
         const sender = msg.key.remoteJid;
@@ -381,6 +402,13 @@ ${text}` });
          .map(x => x.split(':')[0].split('@')[0]);
 
         const isOwner = idPengirim.some(isOwnerId);
+
+        // Begitu owner benar-benar chat, pakai alamat chat itu untuk laporan.
+        // Lebih andal daripada menebak dari LID/nomor di konfigurasi.
+        if (isOwner && !isGroup && sender && sender !== ownerJid) {
+            ownerJid = sender;
+            _origLog(`📮 Alamat laporan owner diperbarui: ${ownerJid}`);
+        }
 
         let text = "";
         let extendedMessage = null;
