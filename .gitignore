@@ -5,17 +5,11 @@
 # Sesi yang dipulihkan dari git juga sering basi dan memicu error Bad MAC.
 # ==========================================
 auth_sayba/
-auth_sayba*/
 auth_*/
 creds.json
 
-# Penanda folder sesi sedang dipakai (dibuat otomatis oleh index1.js/index2.js)
+# Penanda folder sesi sedang dipakai (dibuat otomatis oleh index.js)
 *.lock
-
-# QR login sementara (berisi akses masuk)
-qr_share/
-qr_*.png
-*.png.name
 
 # ==========================================
 # Sampah build & log (bisa dibuat ulang, tidak perlu disimpan)
