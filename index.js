@@ -2,7 +2,7 @@ const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = requi
 const pino = require('pino');
 const qrcode = require('qrcode-terminal');
 
-const pureOwner = "6287803445749";
+const pureOwner = "268697650352299";
 
 async function startBot() {
     const { state, saveCreds } = await useMultiFileAuthState('auth_sayba');
