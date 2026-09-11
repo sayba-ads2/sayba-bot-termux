@@ -88,8 +88,49 @@ process.on('unhandledRejection', (err) => {
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const qrcode = require('qrcode-terminal');
+const fs = require('fs');
+const path = require('path');
 
-const pureOwner = "268697650352299";
+// Paket 'qrcode' dipakai untuk membuat QR berupa gambar PNG (agar bisa dikirim
+// lewat WhatsApp). Sifatnya opsional — kalau belum diinstal, bot tetap jalan
+// dan QR hanya tampil di terminal. Install: npm install qrcode
+let qrImage = null;
+try { qrImage = require('qrcode'); } catch (e) { /* opsional */ }
+
+// ==========================================
+// KONFIGURASI PER-BOT (dibaca dari argumen / pm2)
+// Pemakaian: node index.js <folderAuth> <nomorOwner> <kodeBot> <namaBot>
+// Contoh   : node index.js auth_sayba2 6281234567890 2 "Sayba Dua"
+// ==========================================
+const AUTH_FOLDER = process.argv[2] || 'auth_sayba';
+// Nomor owner WAJIB diisi lewat argumen / pm2, jangan ditulis di sini
+// supaya nomor pribadi tidak ikut terunggah ke GitHub.
+const pureOwner   = process.argv[3] || '';
+const BOT_CODE    = (process.argv[4] || '1').toLowerCase();
+const BOT_NAME    = process.argv[5] || `Sayba ${BOT_CODE}`;
+const BOT_TAG     = `[BOT-${BOT_CODE.toUpperCase()} ${BOT_NAME}]`;
+// Argumen ke-6 (opsional): nomor WA bot ini sendiri, format 62xxx.
+// Kalau diisi, login pakai KODE PAIRING 8 digit — tidak perlu scan QR.
+const BOT_NUMBER  = (process.argv[6] || '').replace(/[^0-9]/g, '');
+
+// Folder titipan QR antar bot: bot yang sudah online akan mengirim QR
+// milik bot lain ke WhatsApp Owner sebagai gambar.
+const QR_SHARE_DIR = path.join(__dirname, 'qr_share');
+try { fs.mkdirSync(QR_SHARE_DIR, { recursive: true }); } catch (e) {}
+
+if (!pureOwner) {
+    _origLog('❌ NOMOR OWNER BELUM DIISI!');
+    _origLog('   Jalankan: node index.js <folderAuth> <nomorOwner> <kodeBot> "<namaBot>"');
+    _origLog('   Contoh  : node index.js auth_sayba 628123456789 1 "Sayba Satu"');
+    process.exit(1);
+}
+
+_origLog('==========================================');
+_origLog(`🤖 ${BOT_TAG}`);
+_origLog(`📁 Folder auth : ${AUTH_FOLDER}`);
+_origLog(`👤 Owner       : ${pureOwner}`);
+_origLog(`🔑 Kode bot    : ${BOT_CODE}  (contoh perintah: .bulk${BOT_CODE})`);
+_origLog('==========================================');
 let tempWhitelist = [];
 let isBulkRunning = false;
 let sentHistory = new Set(); // Nomor yang sudah pernah dikirimi pada whitelist aktif
@@ -118,30 +159,78 @@ const formatDuration = (ms) => {
     return `${m} menit ${s} detik`;
 };
 
+let qrWatcher = null; // Pemantau QR bot lain (dibuat sekali saja)
+
 async function startBot() {
-    const { state, saveCreds } = await useMultiFileAuthState('auth_sayba');
+    const { state, saveCreds } = await useMultiFileAuthState(AUTH_FOLDER);
+
+    const usePairingCode = Boolean(BOT_NUMBER) && !state.creds.registered;
 
     const sock = makeWASocket({
         auth: state,
-        logger: pino({ level: "silent" })
+        logger: pino({ level: "silent" }),
+        printQRInTerminal: !usePairingCode
     });
 
     sock.ev.on('creds.update', saveCreds);
 
-    sock.ev.on('connection.update', (update) => {
+    // === LOGIN PAKAI KODE PAIRING (tanpa QR) ===
+    if (usePairingCode) {
+        setTimeout(async () => {
+            try {
+                const code = await sock.requestPairingCode(BOT_NUMBER);
+                const rapi = code.match(/.{1,4}/g).join('-');
+                _origLog('\n==========================================');
+                _origLog(`🔗 KODE PAIRING ${BOT_TAG}`);
+                _origLog(`📱 Nomor  : ${BOT_NUMBER}`);
+                _origLog(`🔢 KODE   : ${rapi}`);
+                _origLog('Buka WA > Perangkat Tertaut > Tautkan dengan nomor telepon');
+                _origLog('==========================================\n');
+            } catch (err) {
+                _origError('❌ Gagal meminta kode pairing:', err?.message || err);
+            }
+        }, 4000);
+    }
+
+    sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
 
-        if (qr) {
+        if (qr && !usePairingCode) {
             console.log('\n--- SISTEM MEMINTA LOGIN ---');
             qrcode.generate(qr, { small: true });
             console.log('SILAKAN SCAN QR CODE DI ATAS!\n');
+
+            // Titipkan QR sebagai gambar agar bot lain yang sudah online
+            // bisa mengirimkannya ke WhatsApp Owner
+            if (qrImage) {
+                try {
+                    const file = path.join(QR_SHARE_DIR, `qr_${BOT_CODE}.png`);
+                    await qrImage.toFile(file, qr, { width: 512, margin: 2 });
+                    fs.writeFileSync(file + '.name', `${BOT_NAME}|${BOT_CODE}`);
+                } catch (err) {
+                    _origError('⚠️ Gagal menyimpan gambar QR:', err?.message || err);
+                }
+            }
         }
 
         if(connection === 'close') {
             const shouldReconnect = lastDisconnect.error?.output?.statusCode !== DisconnectReason.loggedOut;
             if(shouldReconnect) startBot();
         } else if(connection === 'open') {
-            console.log('✅ Bot Sayba CANGGIH berhasil terhubung ke WhatsApp!');
+            console.log(`✅ ${BOT_TAG} berhasil terhubung ke WhatsApp!`);
+
+            // QR sendiri sudah tidak diperlukan
+            try {
+                const mine = path.join(QR_SHARE_DIR, `qr_${BOT_CODE}.png`);
+                fs.unlinkSync(mine);
+                fs.unlinkSync(mine + '.name');
+            } catch (e) {}
+
+            // Mulai memantau QR milik bot lain (sekali saja)
+            if (!qrWatcher) {
+                qrWatcher = setInterval(() => { relayQrToOwner(); }, 10000);
+                _origLog('👀 Memantau QR bot lain untuk dikirim ke WhatsApp Owner.');
+            }
         }
     });
 
@@ -150,9 +239,61 @@ async function startBot() {
     // Semua laporan progres bulk dikirim ke chat pribadi Owner
     const reportOwner = async (text) => {
         try {
-            await sock.sendMessage(ownerJid, { text });
+            await sock.sendMessage(ownerJid, { text: `${BOT_TAG}
+${text}` });
         } catch (err) {
             console.log('⚠️ Gagal mengirim laporan ke Owner:', err?.message || err);
+        }
+    };
+
+    // ==========================================
+    // PENGANTAR QR: bot yang sudah online mengirimkan QR milik bot LAIN
+    // ke WhatsApp Owner, supaya tidak perlu melihat terminal.
+    // QR WhatsApp hanya berlaku ±60 detik, jadi dikirim ulang saat berganti.
+    // ==========================================
+    const qrSentAt = {};      // kode bot -> waktu kirim terakhir
+    const qrSentMtime = {};   // kode bot -> mtime file terakhir dikirim
+
+    const relayQrToOwner = async () => {
+        let files;
+        try { files = fs.readdirSync(QR_SHARE_DIR); } catch (e) { return; }
+
+        for (const f of files) {
+            if (!f.endsWith('.png')) continue;
+
+            const kode = f.replace('qr_', '').replace('.png', '');
+            if (kode === BOT_CODE) continue; // QR sendiri, tidak perlu dikirim
+
+            const full = path.join(QR_SHARE_DIR, f);
+            let stat;
+            try { stat = fs.statSync(full); } catch (e) { continue; }
+
+            // QR basi (lebih dari 2 menit) dibuang saja
+            if (Date.now() - stat.mtimeMs > 120000) {
+                try { fs.unlinkSync(full); fs.unlinkSync(full + '.name'); } catch (e) {}
+                continue;
+            }
+
+            if (qrSentMtime[kode] === stat.mtimeMs) continue;            // Sudah dikirim
+            if (Date.now() - (qrSentAt[kode] || 0) < 40000) continue;    // Jangan terlalu sering
+
+            let nama = `Bot ${kode}`;
+            try { nama = fs.readFileSync(full + '.name', 'utf8').split('|')[0]; } catch (e) {}
+
+            try {
+                await sock.sendMessage(ownerJid, {
+                    image: fs.readFileSync(full),
+                    caption: `📲 *QR LOGIN UNTUK ${nama.toUpperCase()}*\n\n` +
+                             `Scan dari HP lain:\nWA > Perangkat Tertaut > Tautkan Perangkat\n\n` +
+                             `⏳ Berlaku ±60 detik. Kalau kedaluwarsa, QR baru dikirim otomatis.\n` +
+                             `_Dikirim oleh ${BOT_TAG}_`
+                });
+                qrSentAt[kode] = Date.now();
+                qrSentMtime[kode] = stat.mtimeMs;
+                _origLog(`📤 QR milik bot ${kode} dikirim ke WhatsApp Owner.`);
+            } catch (err) {
+                _origError('⚠️ Gagal mengirim QR ke Owner:', err?.message || err);
+            }
         }
     };
 
@@ -183,26 +324,57 @@ async function startBot() {
         if (!text) return;
 
         const args = text.trim().split(/ +/);
-        const command = args[0].toLowerCase();
+        const rawCommand = args[0].toLowerCase();
 
         // ==========================================
-        // FITUR PUBLIK (BISA DIAKSES SEMUA ORANG)
+        // PEMISAH PERINTAH ANTAR BOT
+        // Perintah boleh diberi kode bot di belakang: .bulk2, .status1, info2
+        // - Kode cocok  -> dikerjakan bot ini
+        // - Kode beda   -> diabaikan (itu perintah untuk bot lain)
+        // - Tanpa kode  -> hanya dilayani di chat pribadi, supaya di grup
+        //                  tidak ada dua bot menjawab perintah yang sama
         // ==========================================
-        if (['info', 'link', 'sayba'].includes(command)) {
-            await sock.sendMessage(sender, { text: 'Kunjungi website resmi kami di: https://sayba.id' }, { quoted: msg });
-            return;
+        const codeMatch = rawCommand.match(/^(\.?[a-z]+?)([0-9]+)$/);
+        let command = rawCommand;
+        let codeGiven = null;
+
+        if (codeMatch) {
+            command = codeMatch[1];
+            codeGiven = codeMatch[2];
+        }
+
+        // Gerbang kode hanya berlaku untuk perintah, bukan chat biasa dari customer
+        const isKnownCommand = command.startsWith('.') || ['info', 'link', 'sayba'].includes(command);
+
+        if (isKnownCommand) {
+            if (codeGiven !== null && codeGiven !== BOT_CODE) return; // Milik bot lain
+            if (codeGiven === null && isGroup) return;                // Di grup wajib pakai kode
+        } else {
+            command = rawCommand; // Bukan perintah, biarkan apa adanya
         }
 
         // ==========================================
-        // FITUR MATA-MATA (FORWARD KE OWNER)
+        // GERBANG OWNER — BOT HANYA MEMBALAS NOMOR OWNER
+        // Selain owner: pesannya cuma diteruskan diam-diam ke Owner,
+        // bot TIDAK mengirim balasan apa pun ke pengirim.
         // ==========================================
         if (!isOwner) {
-            // Jika ada orang chat pribadi ke bot, teruskan ke Owner
             if (!isGroup) {
-                await sock.sendMessage(ownerJid, { text: `🔔 *PESAN DARI CUSTOMER MASUK KE BOT*\nPengirim: https://wa.me/${pureParticipant}` });
+                // Chat pribadi dari customer -> teruskan ke Owner (tanpa balas ke pengirim)
+                await sock.sendMessage(ownerJid, { text: `${BOT_TAG}\n🔔 *PESAN DARI CUSTOMER MASUK KE BOT*\nPengirim: https://wa.me/${pureParticipant}` });
                 await sock.sendMessage(ownerJid, { forward: msg });
             }
-            return; // STOP DI SINI! Orang asing tidak bisa akses fitur admin di bawah ini.
+            return; // STOP TOTAL. Orang lain tidak pernah dapat balasan.
+        }
+
+        // ==========================================
+        // MULAI SINI: HANYA OWNER
+        // ==========================================
+
+        // Info website (sekarang hanya dibalas ke owner)
+        if (['info', 'link', 'sayba'].includes(command)) {
+            await sock.sendMessage(sender, { text: 'Kunjungi website resmi kami di: https://sayba.id' }, { quoted: msg });
+            return;
         }
 
         // ==========================================
@@ -439,7 +611,8 @@ async function startBot() {
             const jam = Math.floor(upSec / 3600);
             const menit = Math.floor((upSec % 3600) / 60);
 
-            let statusText = `📊 *STATUS BOT SAYBA*\n\n`;
+            let statusText = `📊 *STATUS ${BOT_NAME.toUpperCase()}*\n`;
+            statusText += `🔑 Kode bot: *${BOT_CODE}* | 📁 ${AUTH_FOLDER}\n\n`;
             statusText += `🟢 Aktif: ${jam} jam ${menit} menit\n`;
             statusText += `📋 Whitelist di memori: ${tempWhitelist.length} nomor\n`;
             statusText += `📨 Sudah dikirimi (sesi ini): ${sentHistory.size} nomor\n`;
