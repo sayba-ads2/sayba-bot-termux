@@ -5,19 +5,24 @@ const qrcode = require('qrcode-terminal');
 const pureOwner = "268697650352299";
 let tempWhitelist = [];
 let isBulkRunning = false;
+let sentHistory = new Set(); // Nomor yang sudah pernah dikirimi pada whitelist aktif
 
-// Jeda acak antar pengiriman (dalam menit)
-const MIN_DELAY_MINUTE = 1;
-const MAX_DELAY_MINUTE = 15;
+// === PENGATURAN BATCH ===
+const BATCH_SIZE = 5;             // Jumlah nomor per batch
+const MIN_MSG_DELAY_SEC = 5;      // Jeda antar nomor DI DALAM batch (detik)
+const MAX_MSG_DELAY_SEC = 20;
+const MIN_BATCH_DELAY_MIN = 5;    // Jeda antar batch (menit)
+const MAX_BATCH_DELAY_MIN = 6;
 
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-const randomDelayMs = () => {
-    const minSec = MIN_DELAY_MINUTE * 60;
-    const maxSec = MAX_DELAY_MINUTE * 60;
+const randomBetweenMs = (minSec, maxSec) => {
     const sec = Math.floor(Math.random() * (maxSec - minSec + 1)) + minSec;
     return sec * 1000;
 };
+
+const randomMsgDelayMs = () => randomBetweenMs(MIN_MSG_DELAY_SEC, MAX_MSG_DELAY_SEC);
+const randomBatchDelayMs = () => randomBetweenMs(MIN_BATCH_DELAY_MIN * 60, MAX_BATCH_DELAY_MIN * 60);
 
 const formatDuration = (ms) => {
     const totalSec = Math.round(ms / 1000);
@@ -163,19 +168,35 @@ async function startBot() {
 
             if (rawNumbers.length === 0) return await sock.sendMessage(sender, { text: '❌ Format salah.' }, { quoted: msg });
 
-            tempWhitelist = [];
+            // Whitelist baru = sesi kirim baru, riwayat anti-duplikat direset
+            sentHistory = new Set();
+
+            const uniqueTargets = new Set();
+            let duplicateInput = 0;
+
             for (let num of rawNumbers) {
+                let jid;
                 if (num.endsWith('@lid')) {
-                    tempWhitelist.push(num); // Jika LID, langsung simpan
+                    jid = num; // Jika LID, langsung simpan
                 } else {
                     let formattedNum = num.replace(/[^0-9]/g, '');
                     if (formattedNum.startsWith('0')) formattedNum = '62' + formattedNum.substring(1);
-                    formattedNum += '@s.whatsapp.net';
-                    tempWhitelist.push(formattedNum);
+                    jid = formattedNum + '@s.whatsapp.net';
                 }
+                if (uniqueTargets.has(jid)) { duplicateInput++; continue; } // Buang nomor kembar
+                uniqueTargets.add(jid);
             }
 
-            await sock.sendMessage(sender, { text: `✅ Berhasil menyimpan *${tempWhitelist.length} target* (termasuk nomor & LID) ke memori.\n\nSilakan Reply pesan promosi Anda dengan perintah: *.bulk*` }, { quoted: msg });
+            tempWhitelist = [...uniqueTargets];
+
+            const totalBatch = Math.ceil(tempWhitelist.length / BATCH_SIZE);
+            let wlText = `✅ Berhasil menyimpan *${tempWhitelist.length} target* (termasuk nomor & LID) ke memori.\n`;
+            if (duplicateInput > 0) wlText += `🧹 ${duplicateInput} nomor kembar dibuang otomatis.\n`;
+            wlText += `📦 Akan dikirim dalam *${totalBatch} batch* (@${BATCH_SIZE} nomor).\n`;
+            wlText += `🔄 Riwayat anti-duplikat direset untuk sesi ini.\n\n`;
+            wlText += `Silakan Reply pesan promosi Anda dengan perintah: *.bulk*`;
+
+            await sock.sendMessage(sender, { text: wlText }, { quoted: msg });
         }
 
         if (command === '.bulk') {
@@ -195,43 +216,85 @@ async function startBot() {
                 message: quotedContext.quotedMessage
             };
 
-            const targets = [...tempWhitelist];
+            // Saring nomor yang SUDAH pernah dikirimi pada whitelist ini (anti duplicate send)
+            const targets = [];
+            let skippedDuplicate = 0;
+            for (let jid of tempWhitelist) {
+                if (sentHistory.has(jid)) { skippedDuplicate++; continue; }
+                targets.push(jid);
+            }
+
+            // Whitelist langsung dikosongkan: mau kirim lagi berarti harus .setwhitelist ulang
             tempWhitelist = [];
+
+            if (targets.length === 0) {
+                return await sock.sendMessage(sender, { text: `❌ Semua nomor di memori sudah pernah dikirimi pesan pada sesi ini.\n\nBuat whitelist baru dengan *.setwhitelist* jika ingin mengirim ulang.` }, { quoted: msg });
+            }
+
             isBulkRunning = true;
 
-            const avgMinute = (MIN_DELAY_MINUTE + MAX_DELAY_MINUTE) / 2;
-            const estimasi = Math.round((targets.length - 1) * avgMinute);
-            await sock.sendMessage(sender, { text: `⏳ Memulai Forward pesan ke ${targets.length} target (Nomor + LID).\nJeda acak *${MIN_DELAY_MINUTE}-${MAX_DELAY_MINUTE} menit* per nomor.\nEstimasi selesai: ± ${estimasi} menit.\n\nKetik *.stopbulk* untuk menghentikan.` }, { quoted: msg });
+            const totalBatch = Math.ceil(targets.length / BATCH_SIZE);
+            const avgMsgSec = (MIN_MSG_DELAY_SEC + MAX_MSG_DELAY_SEC) / 2;
+            const avgBatchMin = (MIN_BATCH_DELAY_MIN + MAX_BATCH_DELAY_MIN) / 2;
+            const estimasi = Math.round(
+                ((targets.length - totalBatch) * avgMsgSec) / 60 + (totalBatch - 1) * avgBatchMin
+            );
+
+            let startText = `⏳ Memulai Forward pesan ke ${targets.length} target.\n`;
+            if (skippedDuplicate > 0) startText += `🚫 ${skippedDuplicate} nomor dilewati (sudah pernah dikirimi).\n`;
+            startText += `📦 Dibagi ${totalBatch} batch @${BATCH_SIZE} nomor.\n`;
+            startText += `⏱️ Jeda antar nomor: ${MIN_MSG_DELAY_SEC}-${MAX_MSG_DELAY_SEC} detik.\n`;
+            startText += `😴 Jeda antar batch: ${MIN_BATCH_DELAY_MIN}-${MAX_BATCH_DELAY_MIN} menit.\n`;
+            startText += `Estimasi selesai: ± ${estimasi} menit.\n\nKetik *.stopbulk* untuk menghentikan.`;
+            await sock.sendMessage(sender, { text: startText }, { quoted: msg });
 
             let successCount = 0;
             let failCount = 0;
+            let stopped = false;
 
-            for (let i = 0; i < targets.length; i++) {
-                if (!isBulkRunning) {
-                    await sock.sendMessage(sender, { text: `🛑 Bulk dihentikan. Terkirim ${successCount} dari ${targets.length} target.` });
-                    break;
+            for (let b = 0; b < totalBatch; b++) {
+                if (!isBulkRunning) { stopped = true; break; }
+
+                const batch = targets.slice(b * BATCH_SIZE, (b + 1) * BATCH_SIZE);
+                console.log(`\n📦 === BATCH ${b + 1}/${totalBatch} (${batch.length} nomor) ===`);
+
+                for (let i = 0; i < batch.length; i++) {
+                    if (!isBulkRunning) { stopped = true; break; }
+
+                    const targetJid = batch[i];
+                    try {
+                        await sock.sendMessage(targetJid, { forward: messageToForward });
+                        sentHistory.add(targetJid); // Tandai supaya tidak dikirimi lagi
+                        successCount++;
+                        console.log(`   [B${b + 1}] ✅ Terkirim ke ${targetJid}`);
+                    } catch (err) {
+                        failCount++;
+                        console.log(`   [B${b + 1}] ❌ Gagal kirim ke ${targetJid}`);
+                    }
+
+                    // Jeda acak antar nomor di dalam batch (nomor terakhir batch tidak perlu)
+                    if (i < batch.length - 1 && isBulkRunning) {
+                        const delay = randomMsgDelayMs();
+                        console.log(`   ⏱️  Jeda ${Math.round(delay / 1000)} detik...`);
+                        await sleep(delay);
+                    }
                 }
 
-                const targetJid = targets[i];
-                try {
-                    await sock.sendMessage(targetJid, { forward: messageToForward });
-                    successCount++;
-                    console.log(`[${i + 1}/${targets.length}] ✅ Terkirim ke ${targetJid}`);
-                } catch (err) {
-                    failCount++;
-                    console.log(`[${i + 1}/${targets.length}] ❌ Gagal kirim ke ${targetJid}`);
-                }
+                if (stopped || !isBulkRunning) { stopped = true; break; }
 
-                // Jeda acak sebelum target berikutnya (target terakhir tidak perlu jeda)
-                if (i < targets.length - 1 && isBulkRunning) {
-                    const delay = randomDelayMs();
-                    console.log(`⏱️  Menunggu ${formatDuration(delay)} sebelum target berikutnya...`);
-                    await sleep(delay);
+                // Jeda acak antar batch (batch terakhir tidak perlu)
+                if (b < totalBatch - 1) {
+                    const batchDelay = randomBatchDelayMs();
+                    console.log(`😴 Batch ${b + 1} selesai. Istirahat ${formatDuration(batchDelay)}...`);
+                    await sock.sendMessage(sender, { text: `📦 Batch ${b + 1}/${totalBatch} selesai (${successCount} terkirim).\n😴 Istirahat ${formatDuration(batchDelay)} sebelum batch berikutnya.` });
+                    await sleep(batchDelay);
                 }
             }
 
-            if (isBulkRunning) {
-                await sock.sendMessage(sender, { text: `✅ Selesai! Berhasil: ${successCount} target. Gagal: ${failCount} target.` }, { quoted: msg });
+            if (stopped) {
+                await sock.sendMessage(sender, { text: `🛑 Bulk dihentikan.\nBerhasil: ${successCount} | Gagal: ${failCount} | Sisa: ${targets.length - successCount - failCount} target.\n\nBuat whitelist baru (*.setwhitelist*) untuk melanjutkan — nomor yang sudah terkirim otomatis dilewati.` });
+            } else {
+                await sock.sendMessage(sender, { text: `✅ Selesai! ${totalBatch} batch tuntas.\nBerhasil: ${successCount} target. Gagal: ${failCount} target.\n\nMemori sudah dikosongkan. Untuk kirim lagi, buat whitelist baru dengan *.setwhitelist*.` }, { quoted: msg });
             }
             isBulkRunning = false;
         }
