@@ -262,6 +262,16 @@ async function startBot() {
         } else if(connection === 'open') {
             console.log(`✅ ${BOT_TAG} berhasil terhubung ke WhatsApp!`);
 
+            // Bukti bot ini tertaut ke akun yang mana
+            _origLog(`🪪 IDENTITAS BOT INI:`);
+            _origLog(`   Nomor : ${sock.user?.id || '?'}`);
+            _origLog(`   LID   : ${sock.user?.lid || '-'}`);
+            _origLog(`   Nama  : ${sock.user?.name || '-'}`);
+            if (OWNER_IDS.some(o => String(sock.user?.id || '').includes(o))) {
+                _origLog(`   ⚠️ PERINGATAN: bot ini tertaut ke AKUN OWNER SENDIRI.`);
+                _origLog(`      Pesan Anda akan terbaca "fromMe" dan selalu diabaikan.`);
+            }
+
             // QR sendiri sudah tidak diperlukan
             try {
                 const mine = path.join(QR_SHARE_DIR, `qr_${BOT_CODE}.png`);
