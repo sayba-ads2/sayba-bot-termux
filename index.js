@@ -41,6 +41,38 @@ console.log = makeQuietLogger(_origLog);
 console.error = makeQuietLogger(_origError);
 console.warn = makeQuietLogger(_origWarn);
 
+// --- LAPIS KEDUA: cegat langsung di level stdout/stderr ---
+// Sebagian log libsignal tidak lewat console.log, jadi disaring di sini.
+// Blok multi-baris (dump SessionEntry) ikut ditelan sampai kurung tutupnya.
+let swallowingBlock = false;
+
+const makeQuietWrite = (originalWrite, stream) => function (chunk, encoding, callback) {
+    const text = typeof chunk === 'string' ? chunk : (Buffer.isBuffer(chunk) ? chunk.toString('utf8') : '');
+
+    if (swallowingBlock) {
+        // Masih di tengah dump objek — telan sampai ketemu baris penutup "}"
+        if (/^\}\s*$/m.test(text) || text.trim() === '}') swallowingBlock = false;
+        if (typeof callback === 'function') callback();
+        return true;
+    }
+
+    if (text && noisyPatterns.some(p => text.includes(p))) {
+        decryptErrorCount++;
+        lastDecryptError = new Date().toLocaleString('id-ID');
+        // Kalau dump objek terpotong beberapa chunk, telan lanjutannya juga
+        const opens = (text.match(/\{/g) || []).length;
+        const closes = (text.match(/\}/g) || []).length;
+        if (opens > closes) swallowingBlock = true;
+        if (typeof callback === 'function') callback();
+        return true;
+    }
+
+    return originalWrite.call(stream, chunk, encoding, callback);
+};
+
+process.stdout.write = makeQuietWrite(process.stdout.write, process.stdout);
+process.stderr.write = makeQuietWrite(process.stderr.write, process.stderr);
+
 // Jaring pengaman: error yang tidak tertangkap jangan sampai mematikan bot
 process.on('uncaughtException', (err) => {
     const m = err?.message || String(err);
