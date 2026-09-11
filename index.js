@@ -105,7 +105,18 @@ try { qrImage = require('qrcode'); } catch (e) { /* opsional */ }
 const AUTH_FOLDER = process.argv[2] || 'auth_sayba';
 // Nomor owner WAJIB diisi lewat argumen / pm2, jangan ditulis di sini
 // supaya nomor pribadi tidak ikut terunggah ke GitHub.
-const pureOwner   = process.argv[3] || '';
+//
+// BOLEH BEBERAPA, dipisah koma (tanpa spasi):
+//   268697650352299,6281234567890
+// Ini penting karena tiap bot bisa melihat Anda dengan LID yang BERBEDA.
+// Cek dengan mengetik .ceklid di chat bot yang bersangkutan.
+const OWNER_IDS = (process.argv[3] || '')
+    .split(',')
+    .map(x => x.replace(/[^0-9]/g, ''))
+    .filter(Boolean);
+
+const pureOwner = OWNER_IDS[0] || '';   // Dipakai untuk alamat kirim laporan
+const isOwnerId = (id) => OWNER_IDS.includes(id);
 const BOT_CODE    = (process.argv[4] || '1').toLowerCase();
 const BOT_NAME    = process.argv[5] || `Sayba ${BOT_CODE}`;
 const BOT_TAG     = `[BOT-${BOT_CODE.toUpperCase()} ${BOT_NAME}]`;
@@ -159,7 +170,7 @@ if (!pureOwner) {
 _origLog('==========================================');
 _origLog(`🤖 ${BOT_TAG}`);
 _origLog(`📁 Folder auth : ${AUTH_FOLDER}`);
-_origLog(`👤 Owner       : ${pureOwner}`);
+_origLog(`👤 Owner       : ${OWNER_IDS.join(', ')}`);
 _origLog(`🔑 Kode bot    : ${BOT_CODE}  (contoh perintah: .bulk${BOT_CODE})`);
 _origLog('==========================================');
 let tempWhitelist = [];
@@ -337,13 +348,29 @@ ${text}` });
 
     sock.ev.on('messages.upsert', async m => {
         const msg = m.messages[0];
+
+        // Log diagnosa: bukti bahwa pesan benar-benar sampai ke bot ini
+        _origLog(`📩 [${BOT_CODE}] pesan masuk | dari: ${msg?.key?.remoteJid || '?'} | fromMe: ${msg?.key?.fromMe} | jenis: ${msg?.message ? Object.keys(msg.message)[0] : 'kosong'}`);
+
         if(!msg.message || msg.key.fromMe) return;
 
         const sender = msg.key.remoteJid;
         const isGroup = sender.endsWith('@g.us');
         const participant = isGroup ? msg.key.participant : sender;
         const pureParticipant = participant.split(':')[0].split('@')[0];
-        const isOwner = (pureParticipant === pureOwner);
+
+        // Owner bisa terlihat sebagai nomor biasa ATAU sebagai LID, dan LID-nya
+        // berbeda di tiap bot. Semua kemungkinan identitas pengirim dicocokkan.
+        const idPengirim = [
+            pureParticipant,
+            msg.key.participantAlt, msg.key.participantPn,
+            msg.key.senderLid, msg.key.senderPn,
+            isGroup ? null : msg.key.remoteJid,
+            isGroup ? null : msg.key.remoteJidAlt
+        ].filter(x => typeof x === 'string' && x)
+         .map(x => x.split(':')[0].split('@')[0]);
+
+        const isOwner = idPengirim.some(isOwnerId);
 
         let text = "";
         let extendedMessage = null;
@@ -363,6 +390,9 @@ ${text}` });
 
         const args = text.trim().split(/ +/);
         const rawCommand = args[0].toLowerCase();
+
+        // Log diagnosa: teks terbaca & apakah pengirim dikenali sebagai owner
+        _origLog(`   ↳ teks: "${text.slice(0, 40)}" | id terbaca: [${idPengirim.join(', ')}] | owner? ${isOwner ? 'YA' : 'TIDAK'}`);
 
         // ==========================================
         // PEMISAH PERINTAH ANTAR BOT
