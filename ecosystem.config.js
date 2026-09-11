@@ -36,7 +36,7 @@ module.exports = {
     {
       name: 'bot2',
       script: 'index.js',
-      args: 'auth_sayba2 628xxxxxxxxxx 2 "Sayba Dua" 628yyyyyyyyyy',
+      args: 'auth_sayba2 628xxxxxxxxxx 2 "Sayba Dua" 6287721916495',
       cwd: __dirname,
       autorestart: true,
       max_restarts: 50,
