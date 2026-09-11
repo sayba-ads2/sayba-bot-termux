@@ -400,9 +400,11 @@ async function startBot() {
         return sepertiNomor ? `${id}@s.whatsapp.net` : `${id}@lid`;
     };
 
-    // Pakai nomor telepon kalau ada; kalau tidak, pakai LID
+    // Alamat awal laporan: pakai LID owner, karena sesi baru hanya
+    // meneruskan kiriman ke alamat @lid. Alamat ini diperbarui sendiri
+    // begitu owner benar-benar mengirim chat ke bot.
     const ownerNomor = OWNER_IDS.find(id => id.startsWith('62'));
-    let ownerJid = tebakJid(ownerNomor || pureOwner);
+    let ownerJid = tebakJid(pureOwner || ownerNomor);
 
     _origLog(`📮 Alamat laporan owner: ${ownerJid}`);
 
@@ -548,17 +550,13 @@ ${text}` });
         // Alamat untuk membalas. Chat beralamat @lid sering tidak bisa dibuka
         // HP owner setelah bot login ulang, jadi balasan diarahkan ke nomor
         // telepon owner bila diketahui.
-        let alamatBalas = sender;
-        let pakaiQuote = msg;
-
-        if (isOwner && sender.endsWith('@lid')) {
-            // Cari nomor telepon milik owner INI, bukan owner pertama
-            const nomorDia = idPengirim.map(nomorOwnerDari).find(Boolean);
-            if (nomorDia) {
-                alamatBalas = `${nomorDia}@s.whatsapp.net`;
-                pakaiQuote = null;   // pesan aslinya ada di chat lain
-            }
-        }
+        // Balas ke ALAMAT CHAT ASLI. Jangan dialihkan ke nomor telepon:
+        // sesi WhatsApp yang baru dibuat memakai alamat @lid sepenuhnya, dan
+        // kiriman ke @s.whatsapp.net diterima server tapi tidak diteruskan.
+        // Sesi lama masih menerima keduanya — itu sebabnya bot lama terlihat
+        // baik-baik saja sementara bot baru seperti bisu.
+        const alamatBalas = sender;
+        const pakaiQuote = msg;
 
         let text = "";
         let extendedMessage = null;
