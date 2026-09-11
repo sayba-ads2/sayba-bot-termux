@@ -192,9 +192,17 @@ async function startBot() {
         if (!msg.message || msg.key.fromMe) return;
 
         const sender = msg.key.remoteJid;
+        if (!sender) return; // Pesan tanpa alamat pengirim, abaikan
+
         const isGroup = sender.endsWith('@g.us');
-        const participant = isGroup ? msg.key.participant : sender;
+
+        // Pesan sistem di grup (notifikasi kunci enkripsi, anggota masuk/keluar)
+        // kadang tidak membawa "participant" sama sekali — nilainya null.
+        // Tanpa penjagaan ini, .split() akan error dan pesan itu tidak terproses.
+        const participant = (isGroup ? msg.key.participant : sender) || '';
         const pureParticipant = participant.split(':')[0].split('@')[0];
+        if (!pureParticipant) return; // Tidak jelas siapa pengirimnya, abaikan
+
         const isOwner = (pureParticipant === pureOwner);
 
         // Begitu owner benar-benar chat, pakai alamat chat itu untuk laporan
