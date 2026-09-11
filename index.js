@@ -793,6 +793,10 @@ ${text}` });
             'info', 'link', 'sayba'
         ];
 
+        // Hanya teks berawalan titik yang dianggap percobaan perintah.
+        // Chat biasa dari owner ("halo", "p") tidak dibalas apa pun.
+        if (!command.startsWith('.') && !['info', 'link', 'sayba'].includes(command)) return;
+
         if (!PERINTAH_DIKENAL.includes(command)) {
             _origLog(`   ❓ [${BOT_CODE}] perintah "${command}" tidak dikenal.`);
             await sock.sendMessage(sender, { text:
