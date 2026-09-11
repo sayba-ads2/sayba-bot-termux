@@ -128,14 +128,43 @@ const DAFTAR_BOT = {
 // ==========================================================
 //  Di bawah ini tidak perlu diubah
 // ==========================================================
-const BOT_CODE = (process.argv[2] || '1').toLowerCase();
+// Bot mana yang dijalankan, dicari berurutan dari beberapa sumber supaya
+// tidak mudah salah — pm2 kadang menelan argumen setelah nama aplikasi.
+//   1. Variabel lingkungan   : BOT=2 node index.js
+//   2. Argumen               : node index.js 2
+//   3. Nama aplikasi di pm2  : pm2 start index.js --name bot2
+const bersihkan = (v) => String(v || '').replace(/[^a-z0-9]/gi, '').toLowerCase();
+
+// Ubah apa pun ("2", "bot2", "--name") jadi kode bot yang benar-benar ada
+const keDaftar = (v) => {
+    const b = bersihkan(v);
+    if (!b) return '';
+    if (DAFTAR_BOT[b]) return b;                       // sudah pas: "2"
+    const angka = bersihkan(b.match(/[0-9]+/)?.[0]);   // "bot2" -> "2"
+    return DAFTAR_BOT[angka] ? angka : '';
+};
+
+const dariArgumen = process.argv.slice(2).map(keDaftar).find(Boolean) || '';
+const dariNamaPm2 = keDaftar(process.env.name);
+
+const BOT_CODE = keDaftar(process.env.BOT) || dariArgumen || dariNamaPm2 || '1';
 const KONFIG   = DAFTAR_BOT[BOT_CODE];
 
 if (!KONFIG) {
+    _origLog('==========================================');
     _origLog(`❌ Bot "${BOT_CODE}" tidak ada di DAFTAR_BOT.`);
-    _origLog(`   Pilihan yang tersedia: ${Object.keys(DAFTAR_BOT).join(', ')}`);
-    _origLog(`   Contoh: node index.js 1`);
-    process.exit(1);
+    _origLog(`   Pilihan tersedia : ${Object.keys(DAFTAR_BOT).join(', ')}`);
+    _origLog(`   Argumen diterima : ${JSON.stringify(process.argv.slice(2))}`);
+    _origLog(`   Nama pm2         : ${process.env.name || '-'}`);
+    _origLog('');
+    _origLog('   Jalankan salah satu cara ini:');
+    _origLog('     node index.js 2');
+    _origLog('     BOT=2 node index.js');
+    _origLog('     pm2 start index.js --name bot2');
+    _origLog('==========================================');
+
+    // Berhenti dengan kode 0 supaya pm2 TIDAK menghidupkan ulang terus-menerus
+    process.exit(0);
 }
 
 const AUTH_FOLDER = KONFIG.auth;
