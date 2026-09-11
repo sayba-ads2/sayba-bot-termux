@@ -185,6 +185,36 @@ if (!pureOwner) {
     process.exit(1);
 }
 
+// ==========================================================
+// KUNCI FOLDER SESI
+// Dua proses yang memakai folder auth yang sama akan saling merebut
+// koneksi dan gagal terus. Ini mencegahnya sejak awal.
+// ==========================================================
+const LOCK_FILE = path.join(__dirname, `${AUTH_FOLDER}.lock`);
+try {
+    if (fs.existsSync(LOCK_FILE)) {
+        const pidLama = parseInt(fs.readFileSync(LOCK_FILE, 'utf8'), 10);
+        let masihHidup = false;
+        try { process.kill(pidLama, 0); masihHidup = true; } catch (e) { masihHidup = false; }
+
+        if (masihHidup && pidLama !== process.pid) {
+            _origLog('==========================================');
+            _origLog(`❌ FOLDER "${AUTH_FOLDER}" SEDANG DIPAKAI PROSES LAIN (PID ${pidLama}).`);
+            _origLog(`   Bot "${BOT_CODE}" tidak dijalankan agar sesi tidak rusak.`);
+            _origLog(`   Kemungkinan dua proses menjalankan bot yang sama.`);
+            _origLog(`   Periksa dengan: pm2 list`);
+            _origLog('==========================================');
+            process.exit(0);   // kode 0 supaya pm2 tidak mengulang terus
+        }
+    }
+    fs.writeFileSync(LOCK_FILE, String(process.pid));
+} catch (e) { /* kunci gagal dibuat, lanjut saja */ }
+
+const lepasKunci = () => { try { fs.unlinkSync(LOCK_FILE); } catch (e) {} };
+process.on('exit', lepasKunci);
+process.on('SIGINT', () => { lepasKunci(); process.exit(0); });
+process.on('SIGTERM', () => { lepasKunci(); process.exit(0); });
+
 _origLog('==========================================');
 _origLog(`🤖 ${BOT_TAG}`);
 _origLog(`📁 Folder auth : ${AUTH_FOLDER}`);
@@ -236,7 +266,7 @@ async function startBot() {
 
     // === LOGIN PAKAI KODE PAIRING (tanpa QR) ===
     if (usePairingCode) {
-        setTimeout(async () => {
+        const mintaKode = async (sisaPercobaan = 5) => {
             try {
                 const code = await sock.requestPairingCode(BOT_NUMBER);
                 const rapi = code.match(/.{1,4}/g).join('-');
@@ -247,9 +277,17 @@ async function startBot() {
                 _origLog('Buka WA > Perangkat Tertaut > Tautkan dengan nomor telepon');
                 _origLog('==========================================\n');
             } catch (err) {
-                _origError('❌ Gagal meminta kode pairing:', err?.message || err);
+                const pesan = err?.message || String(err);
+                if (sisaPercobaan > 0) {
+                    _origLog(`⏳ Kode pairing belum bisa diminta (${pesan}). Mencoba lagi 8 detik lagi... [sisa ${sisaPercobaan}]`);
+                    setTimeout(() => mintaKode(sisaPercobaan - 1), 8000);
+                } else {
+                    _origError(`❌ Gagal meminta kode pairing setelah beberapa kali: ${pesan}`);
+                    _origError(`   Periksa nomor "${BOT_NUMBER}" dan koneksi internet, lalu restart bot ini.`);
+                }
             }
-        }, 4000);
+        };
+        setTimeout(() => mintaKode(), 5000);
     }
 
     sock.ev.on('connection.update', async (update) => {
