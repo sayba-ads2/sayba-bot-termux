@@ -125,6 +125,16 @@ const LOGIN_MODE = 'tanya';
 // Format bebas: '081234567890', '6281234567890', atau '+62 812-3456-7890'
 const BOT_NUMBER = '';
 
+// === GRUP YANG BOLEH MEMERINTAH BOT ===
+// Bot hanya menanggapi perintah dari grup yang namanya ada di daftar ini.
+// Grup lain diabaikan sepenuhnya, walau bot ikut jadi anggotanya.
+//
+// - Nama harus sama dengan nama grup di WhatsApp. Huruf besar/kecil bebas,
+//   spasi di ujung diabaikan, tapi spasi ganda di tengah dianggap berbeda.
+// - Kosongkan ([]) kalau bot tidak boleh diperintah dari grup mana pun.
+// - Chat pribadi dengan owner tidak terpengaruh daftar ini.
+const GRUP_IZIN = ['BOT JAYA'];
+
 // === PENGATURAN BATCH ===
 const BATCH_SIZE = 5;             // Jumlah nomor per batch
 const MIN_MSG_DELAY_SEC = 5;      // Jeda antar nomor DI DALAM batch (detik)
@@ -192,6 +202,10 @@ const simpanPeta = () => {
 };
 
 const bersihkanId = (v) => String(v || '').split(':')[0].split('@')[0].replace(/[^0-9]/g, '');
+
+// Cocokkan nama grup dengan daftar GRUP_IZIN — huruf besar/kecil diabaikan
+const GRUP_IZIN_RAPI = GRUP_IZIN.map(g => String(g).trim().toLowerCase());
+const grupDiizinkan = (nama) => GRUP_IZIN_RAPI.includes(String(nama || '').trim().toLowerCase());
 
 // Catat pasangan kalau keduanya diketahui. Mengembalikan true kalau baru.
 const catatPasangan = (lid, nomor) => {
@@ -568,6 +582,23 @@ async function startBot() {
         }
     });
 
+    // Nama grup disimpan sementara supaya tidak menanyakan server tiap pesan
+    const cacheNamaGrup = new Map();
+
+    const ambilNamaGrup = async (jidGrup) => {
+        const tersimpan = cacheNamaGrup.get(jidGrup);
+        if (tersimpan && Date.now() - tersimpan.waktu < 600000) return tersimpan.nama;
+
+        try {
+            const meta = await sock.groupMetadata(jidGrup);
+            cacheNamaGrup.set(jidGrup, { nama: meta.subject, waktu: Date.now() });
+            return meta.subject;
+        } catch (err) {
+            _origLog(`   ⚠️ Gagal membaca nama grup: ${err?.message || err}`);
+            return '';
+        }
+    };
+
     sock.ev.on('messages.upsert', async m => {
         const msg = m.messages[0];
 
@@ -625,6 +656,19 @@ async function startBot() {
         const command = args[0].toLowerCase();
 
         _origLog(`   ↳ teks: "${text.slice(0, 40)}" | pengirim: ${pureParticipant} | owner? ${isOwner ? 'YA' : 'TIDAK'}`);
+
+        // ==========================================================
+        // GERBANG GRUP
+        // Di grup, bot hanya menanggapi kalau nama grupnya terdaftar di
+        // GRUP_IZIN. Grup lain diabaikan sepenuhnya — bot tidak membalas
+        // apa pun di sana, walau ikut jadi anggota.
+        // ==========================================================
+        if (isGroup) {
+            const namaGrupIni = await ambilNamaGrup(sender);
+            const boleh = grupDiizinkan(namaGrupIni);
+            _origLog(`   👥 Grup: "${namaGrupIni}" | diizinkan? ${boleh ? 'YA' : 'TIDAK'}`);
+            if (!boleh) return;
+        }
 
         // ==========================================================
         // ALAMAT BALASAN
