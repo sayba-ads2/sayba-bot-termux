@@ -70,20 +70,34 @@ const makeQuietWrite = (originalWrite, stream) => function (chunk, encoding, cal
     return originalWrite.call(stream, chunk, encoding, callback);
 };
 
+// Simpan fungsi tulis ASLI sebelum disaring. Dipakai untuk pesan penting
+// yang TIDAK BOLEH ikut tersaring — misalnya error saat mengirim pesan,
+// yang teksnya kebetulan mengandung kata seperti "Session error" dan
+// tanpa ini akan hilang tanpa jejak.
+const _tulisAsli = process.stdout.write.bind(process.stdout);
+const logPenting = (teks) => _tulisAsli(teks + '\n');
+
 process.stdout.write = makeQuietWrite(process.stdout.write, process.stdout);
 process.stderr.write = makeQuietWrite(process.stderr.write, process.stderr);
 
-// Jaring pengaman: error yang tidak tertangkap jangan sampai mematikan bot
-process.on('uncaughtException', (err) => {
+// Jaring pengaman: error yang tidak tertangkap jangan sampai mematikan bot.
+// Yang diredam hanya error dekripsi murni — sisanya SELALU ditampilkan lewat
+// logPenting(), supaya tidak ada kegagalan yang hilang tanpa jejak.
+const errorDekripsiSaja = ['Failed to decrypt', 'Bad MAC', 'MessageCounterError'];
+
+const tanganiError = (label) => (err) => {
     const m = err?.message || String(err);
-    if (noisyPatterns.some(p => m.includes(p))) { decryptErrorCount++; return; }
-    _origError('❌ Uncaught Exception:', m);
-});
-process.on('unhandledRejection', (err) => {
-    const m = err?.message || String(err);
-    if (noisyPatterns.some(p => m.includes(p))) { decryptErrorCount++; return; }
-    _origError('❌ Unhandled Rejection:', m);
-});
+    if (errorDekripsiSaja.some(p => m.includes(p))) {
+        decryptErrorCount++;
+        lastDecryptError = new Date().toLocaleString('id-ID');
+        return;
+    }
+    logPenting(`❌ ${label}: ${m}`);
+    if (err?.stack) logPenting(`   ${String(err.stack).split('\n')[1] || ''}`);
+};
+
+process.on('uncaughtException', tanganiError('Uncaught Exception'));
+process.on('unhandledRejection', tanganiError('Unhandled Rejection'));
 
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
 const pino = require('pino');
@@ -318,6 +332,38 @@ async function startBot() {
     });
 
     sock.ev.on('creds.update', saveCreds);
+
+    // ==========================================================
+    // PENCATAT HASIL KIRIM
+    // Memakai logPenting() supaya error pengiriman tidak ikut tersaring
+    // oleh peredam log — dulu error seperti "Session error" hilang tanpa
+    // jejak, sehingga bot terlihat "diam saja" tanpa penjelasan.
+    // ==========================================================
+    const _kirimAsli = sock.sendMessage.bind(sock);
+    sock.sendMessage = async (jid, isi, opsi) => {
+        const jenis = Object.keys(isi || {})[0] || '?';
+        try {
+            const hasil = await _kirimAsli(jid, isi, opsi);
+            logPenting(`   📤 kirim ${jenis} ke ${jid} → OK (id: ${hasil?.key?.id || '-'})`);
+            return hasil;
+        } catch (err) {
+            logPenting(`   ❌ GAGAL kirim ${jenis} ke ${jid}`);
+            logPenting(`      Alasan: ${err?.message || err}`);
+            if (err?.stack) logPenting(`      ${String(err.stack).split('\n')[1] || ''}`);
+            throw err;
+        }
+    };
+
+    // Status pengiriman: bukti pesan benar-benar sampai atau tidak
+    const namaStatus = { 0: 'ERROR', 1: 'MENUNGGU', 2: 'SERVER', 3: 'SAMPAI', 4: 'DIBACA', 5: 'DIPUTAR' };
+    sock.ev.on('messages.update', (daftar) => {
+        for (const u of daftar) {
+            const st = u.update?.status;
+            if (st === undefined || st === null) continue;
+            if (!u.key?.fromMe) continue;
+            logPenting(`   📬 pesan ${u.key?.id} → ${namaStatus[st] || st}`);
+        }
+    });
 
     // === LOGIN PAKAI KODE PAIRING ===
     if (pakaiPairing) {
