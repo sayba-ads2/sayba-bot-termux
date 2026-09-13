@@ -546,10 +546,48 @@ async function startBot() {
         _origLog(`   ↳ teks: "${text.slice(0, 40)}" | pengirim: ${pureParticipant} | owner? ${isOwner ? 'YA' : 'TIDAK'}`);
 
         // ==========================================================
+        // ALAMAT BALASAN
+        // Chat yang beralamat @lid kadang tidak bisa menerima kiriman:
+        // pesannya diterima server (dapat ID) tapi tidak pernah sampai,
+        // tanpa error apa pun. Karena itu balasan dikirim ke alamat chat
+        // asli DAN ke nomor teleponnya (kalau WhatsApp menyertakannya),
+        // supaya setidaknya salah satu benar-benar tiba.
+        // ==========================================================
+        const alamatBalasan = [];
+        alamatBalasan.push(sender);
+
+        for (const alt of [msg.key.senderPn, msg.key.participantPn, msg.key.remoteJidAlt]) {
+            if (typeof alt !== 'string' || !alt) continue;
+            const bersih = alt.split(':')[0].split('@')[0];
+            if (!bersih) continue;
+            const jidNomor = `${bersih}@s.whatsapp.net`;
+            if (!alamatBalasan.includes(jidNomor)) alamatBalasan.push(jidNomor);
+        }
+
+        if (alamatBalasan.length > 1) {
+            _origLog(`   📬 Balasan dikirim ke ${alamatBalasan.length} alamat: ${alamatBalasan.join(' , ')}`);
+        }
+
+        // Kirim balasan ke semua alamat yang mungkin. Kegagalan di satu
+        // alamat tidak menghentikan yang lain.
+        const balas = async (isi) => {
+            let adaBerhasil = false;
+            for (const tujuan of alamatBalasan) {
+                try {
+                    await sock.sendMessage(tujuan, isi, (tujuan === sender ? { quoted: msg } : {}));
+                    adaBerhasil = true;
+                } catch (err) {
+                    logPenting(`   ⚠️ Balasan ke ${tujuan} gagal: ${err?.message || err}`);
+                }
+            }
+            if (!adaBerhasil) logPenting('   ❌ Semua alamat balasan gagal.');
+        };
+
+        // ==========================================================
         // FITUR PUBLIK (BISA DIAKSES SEMUA ORANG)
         // ==========================================================
         if (['info', 'link', 'sayba'].includes(command)) {
-            await sock.sendMessage(sender, { text: 'Kunjungi website resmi kami di: https://sayba.id' }, { quoted: msg });
+            await balas({ text: 'Kunjungi website resmi kami di: https://sayba.id' });
             return;
         }
 
@@ -571,7 +609,7 @@ async function startBot() {
 
         if (command === '.getmembers') {
             const groupName = args.slice(1).join(" ");
-            if (!groupName) return await sock.sendMessage(sender, { text: '❌ Ketik nama grupnya.' }, { quoted: msg });
+            if (!groupName) return await balas({ text: '❌ Ketik nama grupnya.' });
 
             const groups = await sock.groupFetchAllParticipating();
             let targetGroup = null;
@@ -583,7 +621,7 @@ async function startBot() {
                 }
             }
 
-            if (!targetGroup) return await sock.sendMessage(sender, { text: `❌ Grup tidak ditemukan.` }, { quoted: msg });
+            if (!targetGroup) return await balas({ text: `❌ Grup tidak ditemukan.` });
 
             const members = targetGroup.participants;
             let countRealNumber = 0;
@@ -615,7 +653,7 @@ async function startBot() {
             if (countSelfSkipped > 0) replyText += ` + ${countSelfSkipped} nomor Anda sendiri`;
             replyText += `\n\n${memberList}`;
 
-            await sock.sendMessage(sender, { text: replyText }, { quoted: msg });
+            await balas({ text: replyText });
         }
 
         if (command === '.setwhitelist') {
@@ -623,7 +661,7 @@ async function startBot() {
             // Memisahkan berdasarkan enter, koma, atau spasi
             const rawNumbers = numbersText.split(/[\n, ]+/).map(n => n.trim()).filter(n => n.length > 5);
 
-            if (rawNumbers.length === 0) return await sock.sendMessage(sender, { text: '❌ Format salah.' }, { quoted: msg });
+            if (rawNumbers.length === 0) return await balas({ text: '❌ Format salah.' });
 
             // Whitelist baru = sesi kirim baru, riwayat anti-duplikat direset
             sentHistory = new Set();
@@ -653,15 +691,15 @@ async function startBot() {
             wlText += `🔄 Riwayat anti-duplikat direset untuk sesi ini.\n\n`;
             wlText += `Silakan Reply pesan promosi Anda dengan perintah: *.bulk*`;
 
-            await sock.sendMessage(sender, { text: wlText }, { quoted: msg });
+            await balas({ text: wlText });
         }
 
         if (command === '.bulk') {
-            if (isBulkRunning) return await sock.sendMessage(sender, { text: '⚠️ Masih ada proses bulk yang berjalan. Tunggu selesai, atau ketik *.stopbulk*.' }, { quoted: msg });
-            if (tempWhitelist.length === 0) return await sock.sendMessage(sender, { text: '❌ Memori kosong!' }, { quoted: msg });
+            if (isBulkRunning) return await balas({ text: '⚠️ Masih ada proses bulk yang berjalan. Tunggu selesai, atau ketik *.stopbulk*.' });
+            if (tempWhitelist.length === 0) return await balas({ text: '❌ Memori kosong!' });
 
             const isReply = extendedMessage && extendedMessage.contextInfo && extendedMessage.contextInfo.stanzaId;
-            if (!isReply) return await sock.sendMessage(sender, { text: '❌ Anda harus me-reply pesan!' }, { quoted: msg });
+            if (!isReply) return await balas({ text: '❌ Anda harus me-reply pesan!' });
 
             const quotedContext = extendedMessage.contextInfo;
             const messageToForward = {
@@ -685,7 +723,7 @@ async function startBot() {
             tempWhitelist = [];
 
             if (targets.length === 0) {
-                return await sock.sendMessage(sender, { text: `❌ Semua nomor di memori sudah pernah dikirimi pesan pada sesi ini.\n\nBuat whitelist baru dengan *.setwhitelist* jika ingin mengirim ulang.` }, { quoted: msg });
+                return await balas({ text: `❌ Semua nomor di memori sudah pernah dikirimi pesan pada sesi ini.\n\nBuat whitelist baru dengan *.setwhitelist* jika ingin mengirim ulang.` });
             }
 
             isBulkRunning = true;
@@ -703,7 +741,7 @@ async function startBot() {
             startText += `⏱️ Jeda antar nomor: ${MIN_MSG_DELAY_SEC}-${MAX_MSG_DELAY_SEC} detik.\n`;
             startText += `😴 Jeda antar batch: ${MIN_BATCH_DELAY_MIN}-${MAX_BATCH_DELAY_MIN} menit.\n`;
             startText += `Estimasi selesai: ± ${estimasi} menit.\n\nKetik *.stopbulk* untuk menghentikan.`;
-            await sock.sendMessage(sender, { text: startText }, { quoted: msg });
+            await balas({ text: startText });
 
             let successCount = 0;
             let failCount = 0;
@@ -789,9 +827,9 @@ async function startBot() {
         }
 
         if (command === '.stopbulk') {
-            if (!isBulkRunning) return await sock.sendMessage(sender, { text: 'ℹ️ Tidak ada proses bulk yang berjalan.' }, { quoted: msg });
+            if (!isBulkRunning) return await balas({ text: 'ℹ️ Tidak ada proses bulk yang berjalan.' });
             isBulkRunning = false;
-            await sock.sendMessage(sender, { text: '🛑 Perintah berhenti diterima. Bulk akan berhenti setelah jeda yang sedang berjalan selesai.' }, { quoted: msg });
+            await balas({ text: '🛑 Perintah berhenti diterima. Bulk akan berhenti setelah jeda yang sedang berjalan selesai.' });
         }
 
         if (command === '.status') {
@@ -808,7 +846,7 @@ async function startBot() {
             if (lastDecryptError) statusText += `\n🕐 Terakhir: ${lastDecryptError}`;
             statusText += `\n\n_Log enkripsi yang diredam itu normal dan sembuh sendiri._`;
 
-            await sock.sendMessage(sender, { text: statusText }, { quoted: msg });
+            await balas({ text: statusText });
         }
     });
 }
