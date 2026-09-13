@@ -161,6 +161,54 @@ if (!pureOwner) {
 }
 
 // ==========================================================
+// BUKU CATATAN LID ↔ NOMOR HP
+//
+// LID sengaja dirancang WhatsApp supaya TIDAK bisa dihitung balik
+// menjadi nomor HP — itu fitur privasi, bukan keterbatasan kode.
+// Satu-satunya cara mengetahui pasangannya adalah menunggu WhatsApp
+// sendiri menyebutkan keduanya sekaligus, yaitu saat:
+//   - orangnya mengirim pesan (kolom senderPn + senderLid)
+//   - data grup menyertakan keduanya
+//   - kita mencari lewat onWhatsApp(nomor) -> mengembalikan LID-nya
+//
+// Setiap kali itu terjadi, pasangannya dicatat di sini dan disimpan
+// ke file, supaya tidak hilang saat bot dijalankan ulang.
+// ==========================================================
+const fsCatatan = require('fs');
+const FILE_PETA = require('path').join(__dirname, 'peta_lid.json');
+const petaLid = new Map();   // LID (angka saja) -> nomor HP
+
+const muatPeta = () => {
+    try {
+        const isi = JSON.parse(fsCatatan.readFileSync(FILE_PETA, 'utf8'));
+        for (const [lid, nomor] of Object.entries(isi)) petaLid.set(lid, nomor);
+    } catch (e) { /* belum ada file, wajar */ }
+};
+
+const simpanPeta = () => {
+    try {
+        fsCatatan.writeFileSync(FILE_PETA, JSON.stringify(Object.fromEntries(petaLid), null, 2));
+    } catch (e) { /* gagal simpan, tidak fatal */ }
+};
+
+const bersihkanId = (v) => String(v || '').split(':')[0].split('@')[0].replace(/[^0-9]/g, '');
+
+// Catat pasangan kalau keduanya diketahui. Mengembalikan true kalau baru.
+const catatPasangan = (lid, nomor) => {
+    const l = bersihkanId(lid);
+    const n = bersihkanId(nomor);
+    if (!l || !n || l === n) return false;
+    if (petaLid.get(l) === n) return false;
+    petaLid.set(l, n);
+    simpanPeta();
+    return true;
+};
+
+const nomorDariLid = (lid) => petaLid.get(bersihkanId(lid)) || null;
+
+muatPeta();
+
+// ==========================================================
 // KUNCI SESI — CEGAH DUA PROSES BERJALAN BERSAMAAN
 // Kalau bot dijalankan dua kali (misalnya lewat pm2 DAN lewat
 // "node index.js" manual), keduanya memakai sesi WhatsApp yang sama
@@ -587,6 +635,14 @@ async function startBot() {
         // remoteJidAlt, dll). Itu hanya DICATAT di log sebagai informasi,
         // TIDAK dipakai sebagai tujuan kirim.
         // ==========================================================
+        // Pelajari pasangan LID <-> nomor dari pesan ini, kalau WhatsApp
+        // menyebutkan keduanya. Inilah satu-satunya cara mengumpulkannya.
+        const lidTerlihat = msg.key.senderLid || (String(sender).endsWith('@lid') ? sender : null);
+        const nomorTerlihat = msg.key.senderPn || msg.key.participantPn || msg.key.remoteJidAlt;
+        if (lidTerlihat && nomorTerlihat && catatPasangan(lidTerlihat, nomorTerlihat)) {
+            _origLog(`   🔗 Pasangan baru dicatat: ${bersihkanId(lidTerlihat)} = ${bersihkanId(nomorTerlihat)} (total ${petaLid.size})`);
+        }
+
         // Nomor telepon yang WhatsApp sebutkan sebagai pemilik chat ini.
         // Hanya dipakai sebagai CADANGAN, kalau kiriman ke alamat chat
         // ditolak WhatsApp (status ERROR). Tidak dipakai kalau berhasil.
@@ -698,6 +754,8 @@ async function startBot() {
                 logPenting('  .bulk <pesan>                Kirim pesan ke seluruh whitelist');
                 logPenting('  .stopbulk                    Hentikan pengiriman');
                 logPenting('  .kirim <nomor> <pesan>       Kirim pesan ke satu nomor');
+                logPenting('  .peta                        Lihat catatan LID → nomor');
+                logPenting('  .peta <lid/nomor>            Cari pasangan satu identitas');
                 logPenting('  keluar                       Tutup konsol (bot tetap jalan)');
                 logPenting('');
                 return rl.prompt();
@@ -758,6 +816,34 @@ async function startBot() {
     //   2. Konsol terminal -> balas() mencetak ke layar Termux
     // ==========================================================
     const jalankanPerintah = async ({ command, args, balas, extendedMessage, sender }) => {
+        // Lihat / cari isi catatan pasangan LID <-> nomor
+        if (command === '.peta') {
+            const cari = (args[1] || '').replace(/[^0-9]/g, '');
+
+            if (cari) {
+                const nomor = nomorDariLid(cari);
+                if (nomor) return await balas({ text: `🔗 LID ${cari}\n📱 Nomor: ${nomor}` });
+
+                // Coba juga arah sebaliknya: nomor -> LID
+                const lidKetemu = [...petaLid.entries()].find(([, n]) => n === cari);
+                if (lidKetemu) return await balas({ text: `📱 Nomor ${cari}\n🔗 LID: ${lidKetemu[0]}` });
+
+                return await balas({ text: `❌ ${cari} belum ada di catatan.\n\nPasangan hanya tercatat kalau orangnya pernah mengirim pesan ke bot, atau WhatsApp menyebutkannya di data grup.` });
+            }
+
+            if (petaLid.size === 0) {
+                return await balas({ text: '📒 Catatan LID masih kosong.\n\nAkan terisi sendiri setiap ada orang mengirim pesan ke bot.' });
+            }
+
+            let daftar = `📒 *CATATAN LID → NOMOR* (${petaLid.size})\n\n`;
+            let n = 0;
+            for (const [lid, nomor] of petaLid) {
+                if (++n > 50) { daftar += `\n_...dan ${petaLid.size - 50} lainnya (lihat file peta_lid.json)_`; break; }
+                daftar += `${lid} → ${nomor}\n`;
+            }
+            return await balas({ text: daftar });
+        }
+
         if (command === '.getmembers') {
             const groupName = args.slice(1).join(" ");
             if (!groupName) return await balas({ text: '❌ Ketik nama grupnya.' });
@@ -779,7 +865,15 @@ async function startBot() {
             let countLID = 0;
             let countAdminSkipped = 0;
             let countSelfSkipped = 0;
+            let countTerjemah = 0;
             let memberList = "";
+
+            // Sebagian data grup menyertakan LID dan nomor sekaligus.
+            // Kalau ada, catat dulu sebagai bekal menerjemahkan.
+            members.forEach(mem => {
+                const nomorAlt = mem.jid || mem.phoneNumber || mem.pn;
+                if (mem.id && nomorAlt) catatPasangan(mem.id, nomorAlt);
+            });
 
             // Menyedot Nomor Asli + Kode Rahasia (LID), TANPA admin grup & nomor sendiri
             members.forEach(mem => {
@@ -793,12 +887,21 @@ async function startBot() {
                     memberList += `${mem.id.split('@')[0]}\n`;
                     countRealNumber++;
                 } else if (mem.id.endsWith('@lid')) {
-                    memberList += `${mem.id}\n`; // MEMUNCULKAN LID
-                    countLID++;
+                    // Kalau pasangannya sudah pernah dicatat, tampilkan nomornya
+                    const nomorKetemu = nomorDariLid(mem.id);
+                    if (nomorKetemu) {
+                        memberList += `${nomorKetemu}\n`;
+                        countRealNumber++;
+                        countTerjemah++;
+                    } else {
+                        memberList += `${mem.id}\n`; // Belum diketahui, tampilkan LID apa adanya
+                        countLID++;
+                    }
                 }
             });
 
             let replyText = `*Daftar Nomor Anggota Grup: ${groupName}*\n`;
+            if (countTerjemah > 0) replyText += `🔗 ${countTerjemah} LID berhasil diterjemahkan jadi nomor (dari catatan).\n`;
             replyText += `Berhasil disedot: ${countRealNumber} nomor asli & ${countLID} ID Rahasia (LID)\n`;
             replyText += `Dikecualikan: ${countAdminSkipped} admin/owner grup`;
             if (countSelfSkipped > 0) replyText += ` + ${countSelfSkipped} nomor Anda sendiri`;
