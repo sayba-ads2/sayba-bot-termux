@@ -547,40 +547,28 @@ async function startBot() {
 
         // ==========================================================
         // ALAMAT BALASAN
-        // Chat yang beralamat @lid kadang tidak bisa menerima kiriman:
-        // pesannya diterima server (dapat ID) tapi tidak pernah sampai,
-        // tanpa error apa pun. Karena itu balasan dikirim ke alamat chat
-        // asli DAN ke nomor teleponnya (kalau WhatsApp menyertakannya),
-        // supaya setidaknya salah satu benar-benar tiba.
+        // Bot HANYA membalas ke chat asal pesan. Tidak pernah mengirim ke
+        // alamat lain, supaya balasan tidak nyasar ke nomor orang lain.
+        //
+        // WhatsApp kadang menyebut identitas alternatif pengirim (senderPn,
+        // remoteJidAlt, dll). Itu hanya DICATAT di log sebagai informasi,
+        // TIDAK dipakai sebagai tujuan kirim.
         // ==========================================================
-        const alamatBalasan = [];
-        alamatBalasan.push(sender);
-
+        const identitasLain = [];
         for (const alt of [msg.key.senderPn, msg.key.participantPn, msg.key.remoteJidAlt]) {
             if (typeof alt !== 'string' || !alt) continue;
-            const bersih = alt.split(':')[0].split('@')[0];
-            if (!bersih) continue;
-            const jidNomor = `${bersih}@s.whatsapp.net`;
-            if (!alamatBalasan.includes(jidNomor)) alamatBalasan.push(jidNomor);
+            if (!identitasLain.includes(alt)) identitasLain.push(alt);
+        }
+        if (identitasLain.length) {
+            _origLog(`   ℹ️ Identitas lain menurut WhatsApp (tidak dikirimi): ${identitasLain.join(' , ')}`);
         }
 
-        if (alamatBalasan.length > 1) {
-            _origLog(`   📬 Balasan dikirim ke ${alamatBalasan.length} alamat: ${alamatBalasan.join(' , ')}`);
-        }
-
-        // Kirim balasan ke semua alamat yang mungkin. Kegagalan di satu
-        // alamat tidak menghentikan yang lain.
         const balas = async (isi) => {
-            let adaBerhasil = false;
-            for (const tujuan of alamatBalasan) {
-                try {
-                    await sock.sendMessage(tujuan, isi, (tujuan === sender ? { quoted: msg } : {}));
-                    adaBerhasil = true;
-                } catch (err) {
-                    logPenting(`   ⚠️ Balasan ke ${tujuan} gagal: ${err?.message || err}`);
-                }
+            try {
+                await sock.sendMessage(sender, isi, { quoted: msg });
+            } catch (err) {
+                logPenting(`   ❌ Balasan ke ${sender} gagal: ${err?.message || err}`);
             }
-            if (!adaBerhasil) logPenting('   ❌ Semua alamat balasan gagal.');
         };
 
         // ==========================================================
