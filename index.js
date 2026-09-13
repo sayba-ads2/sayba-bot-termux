@@ -354,14 +354,46 @@ async function startBot() {
         }
     };
 
-    // Status pengiriman: bukti pesan benar-benar sampai atau tidak
+    // ==========================================================
+    // STATUS PENGIRIMAN + CADANGAN OTOMATIS
+    //
+    // Alamat @lid kadang DITOLAK WhatsApp: pengiriman dapat ID, lalu
+    // statusnya kembali sebagai ERROR dan pesan tidak pernah sampai.
+    // Kalau itu terjadi, bot mencoba sekali lagi lewat nomor telepon
+    // yang WhatsApp sendiri sebutkan sebagai pemilik LID tersebut.
+    //
+    // Nomor cadangan ini TIDAK dipakai kecuali WhatsApp benar-benar
+    // menolak kiriman pertama — jadi tidak ada pesan nyasar.
+    // ==========================================================
     const namaStatus = { 0: 'ERROR', 1: 'MENUNGGU', 2: 'SERVER', 3: 'SAMPAI', 4: 'DIBACA', 5: 'DIPUTAR' };
-    sock.ev.on('messages.update', (daftar) => {
+    const cadanganKirim = new Map(); // id pesan -> { isi, nomorJid, sudahDicoba }
+
+    sock.ev.on('messages.update', async (daftar) => {
         for (const u of daftar) {
             const st = u.update?.status;
             if (st === undefined || st === null) continue;
             if (!u.key?.fromMe) continue;
-            logPenting(`   📬 pesan ${u.key?.id} → ${namaStatus[st] || st}`);
+
+            const id = u.key?.id;
+            logPenting(`   📬 pesan ${id} → ${namaStatus[st] || st}`);
+
+            if (st !== 0) continue; // hanya tangani yang ERROR
+
+            const cadangan = cadanganKirim.get(id);
+            if (!cadangan) {
+                logPenting('      ⚠️ Ditolak WhatsApp, dan tidak ada nomor cadangan untuk dicoba.');
+                continue;
+            }
+            if (cadangan.sudahDicoba) continue;
+            cadangan.sudahDicoba = true;
+
+            logPenting(`      ↪️ Ditolak. Mencoba lewat nomor: ${cadangan.nomorJid}`);
+            try {
+                const ulang = await sock.sendMessage(cadangan.nomorJid, cadangan.isi);
+                logPenting(`      ✅ Terkirim ulang (id: ${ulang?.key?.id || '-'})`);
+            } catch (err) {
+                logPenting(`      ❌ Gagal juga lewat nomor: ${err?.message || err}`);
+            }
         }
     });
 
@@ -554,18 +586,30 @@ async function startBot() {
         // remoteJidAlt, dll). Itu hanya DICATAT di log sebagai informasi,
         // TIDAK dipakai sebagai tujuan kirim.
         // ==========================================================
-        const identitasLain = [];
+        // Nomor telepon yang WhatsApp sebutkan sebagai pemilik chat ini.
+        // Hanya dipakai sebagai CADANGAN, kalau kiriman ke alamat chat
+        // ditolak WhatsApp (status ERROR). Tidak dipakai kalau berhasil.
+        let nomorCadangan = null;
         for (const alt of [msg.key.senderPn, msg.key.participantPn, msg.key.remoteJidAlt]) {
             if (typeof alt !== 'string' || !alt) continue;
-            if (!identitasLain.includes(alt)) identitasLain.push(alt);
+            const bersih = alt.split(':')[0].split('@')[0];
+            if (!bersih) continue;
+            nomorCadangan = `${bersih}@s.whatsapp.net`;
+            break;
         }
-        if (identitasLain.length) {
-            _origLog(`   ℹ️ Identitas lain menurut WhatsApp (tidak dikirimi): ${identitasLain.join(' , ')}`);
+        if (nomorCadangan && nomorCadangan !== sender) {
+            _origLog(`   ℹ️ Nomor cadangan bila ditolak: ${nomorCadangan}`);
+        } else {
+            nomorCadangan = null;
         }
 
         const balas = async (isi) => {
             try {
-                await sock.sendMessage(sender, isi, { quoted: msg });
+                const hasil = await sock.sendMessage(sender, isi, { quoted: msg });
+                // Catat, supaya bisa dikirim ulang lewat nomor kalau ditolak
+                if (hasil?.key?.id && nomorCadangan) {
+                    cadanganKirim.set(hasil.key.id, { isi, nomorJid: nomorCadangan, sudahDicoba: false });
+                }
             } catch (err) {
                 logPenting(`   ❌ Balasan ke ${sender} gagal: ${err?.message || err}`);
             }
