@@ -364,12 +364,40 @@ async function startBot() {
             setTimeout(() => startBot(), 3000);
         } else if (connection === 'open') {
             console.log('✅ Bot Sayba berhasil terhubung ke WhatsApp!');
+
+            // Bot ini tertaut ke akun yang mana — penting untuk memastikan
+            // Anda tidak sedang chat dari akun yang sama dengan botnya.
+            const idBot = sock.user?.id || '?';
+            _origLog('🪪 IDENTITAS BOT:');
+            _origLog(`   Nomor : ${idBot}`);
+            _origLog(`   LID   : ${sock.user?.lid || '-'}`);
+            _origLog(`   Nama  : ${sock.user?.name || '-'}`);
+            _origLog(`   Owner : ${pureOwner}`);
+
+            if (String(idBot).includes(pureOwner)) {
+                _origLog('   ⚠️ BOT TERTAUT KE AKUN OWNER SENDIRI!');
+                _origLog('      Pesan Anda akan terbaca "fromMe" dan SELALU diabaikan.');
+                _origLog('      Bot harus ditautkan ke nomor WA yang BERBEDA dari nomor Anda.');
+            }
         }
     });
 
     sock.ev.on('messages.upsert', async m => {
         const msg = m.messages[0];
-        if (!msg.message || msg.key.fromMe) return;
+
+        // Bukti bahwa pesan benar-benar sampai ke bot. Kalau baris ini tidak
+        // pernah muncul saat Anda chat, berarti pesannya memang tidak sampai —
+        // bukan soal perintah yang salah.
+        _origLog(`📩 masuk | dari: ${msg?.key?.remoteJid || '?'} | fromMe: ${msg?.key?.fromMe} | jenis: ${msg?.message ? Object.keys(msg.message)[0] : 'kosong'}`);
+
+        if (!msg.message) {
+            _origLog('   ⚠️ Isi pesan tidak bisa dibuka (sesi belum cocok). Biasanya sembuh sendiri.');
+            return;
+        }
+        if (msg.key.fromMe) {
+            _origLog('   ⏭️ Pesan dari akun bot sendiri, diabaikan.');
+            return;
+        }
 
         const sender = msg.key.remoteJid;
         if (!sender) return; // Pesan tanpa alamat pengirim, abaikan
@@ -409,6 +437,8 @@ async function startBot() {
 
         const args = text.trim().split(/ +/);
         const command = args[0].toLowerCase();
+
+        _origLog(`   ↳ teks: "${text.slice(0, 40)}" | pengirim: ${pureParticipant} | owner? ${isOwner ? 'YA' : 'TIDAK'}`);
 
         // ==========================================================
         // FITUR PUBLIK (BISA DIAKSES SEMUA ORANG)
