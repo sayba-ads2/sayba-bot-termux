@@ -146,6 +146,45 @@ if (!pureOwner) {
     process.exit(1);
 }
 
+// ==========================================================
+// KUNCI SESI — CEGAH DUA PROSES BERJALAN BERSAMAAN
+// Kalau bot dijalankan dua kali (misalnya lewat pm2 DAN lewat
+// "node index.js" manual), keduanya memakai sesi WhatsApp yang sama
+// dan saling menendang tanpa henti — koneksi putus-sambung terus
+// dengan kode 440 (connectionReplaced), dan pesan tidak pernah
+// sempat terkirim. Penguncian ini menghentikannya sejak awal.
+// ==========================================================
+const fs = require('fs');
+const path = require('path');
+const LOCK_FILE = path.join(__dirname, 'bot.lock');
+
+try {
+    if (fs.existsSync(LOCK_FILE)) {
+        const pidLama = parseInt(fs.readFileSync(LOCK_FILE, 'utf8'), 10);
+        let masihHidup = false;
+        try { process.kill(pidLama, 0); masihHidup = true; } catch (e) { masihHidup = false; }
+
+        if (masihHidup && pidLama !== process.pid) {
+            _origLog('==========================================');
+            _origLog(`❌ BOT SUDAH BERJALAN (PID ${pidLama}).`);
+            _origLog('   Bot kedua tidak dijalankan, supaya sesi WhatsApp tidak');
+            _origLog('   saling ditendang (error 440 connectionReplaced).');
+            _origLog('');
+            _origLog('   Hentikan yang lama dulu:');
+            _origLog('     pm2 delete all');
+            _origLog('     pkill -f "node index.js"');
+            _origLog('==========================================');
+            process.exit(0);   // kode 0 supaya pm2 tidak mengulang terus
+        }
+    }
+    fs.writeFileSync(LOCK_FILE, String(process.pid));
+} catch (e) { /* kunci gagal dibuat, lanjut saja */ }
+
+const lepasKunci = () => { try { fs.unlinkSync(LOCK_FILE); } catch (e) {} };
+process.on('exit', lepasKunci);
+process.on('SIGINT', () => { lepasKunci(); process.exit(0); });
+process.on('SIGTERM', () => { lepasKunci(); process.exit(0); });
+
 // Jangan minta kode pairing baru berkali-kali dalam hitungan detik.
 // Kalau koneksi putus-sambung sebelum kode sempat dipakai, permintaan
 // yang bertubi-tubi bisa membuat WhatsApp menolak semua kodenya.
@@ -361,6 +400,26 @@ async function startBot() {
                 _origLog('❌ Bot ter-logout. Hapus folder auth_sayba lalu jalankan ulang untuk scan QR baru.');
                 return;
             }
+
+            // 440 = sesi diambil alih proses/perangkat lain. Menyambung ulang
+            // hanya melanjutkan saling-tendang tanpa henti, jadi bot berhenti.
+            if (kode === 440) {
+                _origLog('==========================================');
+                _origLog('❌ SESI DIPAKAI PROSES LAIN (kode 440).');
+                _origLog('   Bot berhenti supaya tidak saling menendang tanpa henti.');
+                _origLog('');
+                _origLog('   Biasanya karena bot jalan dua kali sekaligus.');
+                _origLog('   Hentikan semuanya dulu, lalu jalankan SATU saja:');
+                _origLog('     pm2 delete all');
+                _origLog('     pkill -f "node index.js"');
+                _origLog('     pm2 start index.js --name bot');
+                _origLog('');
+                _origLog('   Kalau tetap terjadi, cek juga WhatsApp > Perangkat');
+                _origLog('   Tertaut — mungkin ada sesi lama yang masih aktif.');
+                _origLog('==========================================');
+                return;
+            }
+
             setTimeout(() => startBot(), 3000);
         } else if (connection === 'open') {
             console.log('✅ Bot Sayba berhasil terhubung ke WhatsApp!');
