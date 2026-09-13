@@ -501,6 +501,7 @@ async function startBot() {
             setTimeout(() => startBot(), 3000);
         } else if (connection === 'open') {
             console.log('✅ Bot Sayba berhasil terhubung ke WhatsApp!');
+            mulaiKonsol();   // buka prompt perintah di terminal
 
             // Bot ini tertaut ke akun yang mana — penting untuk memastikan
             // Anda tidak sedang chat dari akun yang sama dengan botnya.
@@ -639,6 +640,124 @@ async function startBot() {
         // FITUR ADMIN (HANYA OWNER YANG BISA)
         // ==========================================================
 
+        // Perintah admin dikerjakan di satu tempat, supaya bisa dipanggil
+        // dari WhatsApp MAUPUN dari konsol terminal.
+        await jalankanPerintah({ command, args, balas, extendedMessage, sender });
+    });
+
+
+    // ==========================================================
+    // KONSOL TERMINAL
+    // Ketik perintah langsung di Termux, tanpa lewat WhatsApp.
+    // Berguna kalau balasan WhatsApp tidak sampai — semua hasil
+    // dicetak di layar, bukan dikirim sebagai chat.
+    //
+    // Hanya aktif kalau dijalankan interaktif (node index.js).
+    // Lewat pm2 tidak ada tempat mengetik, jadi dilewati.
+    // ==========================================================
+    let konsolAktif = false;
+
+    const mulaiKonsol = () => {
+        if (konsolAktif) return;
+        if (!process.stdin.isTTY) {
+            _origLog('ℹ️ Konsol terminal tidak aktif (dijalankan lewat pm2).');
+            _origLog('   Untuk memakainya, jalankan langsung: node index.js');
+            return;
+        }
+        konsolAktif = true;
+
+        const rl = readline.createInterface({
+            input: process.stdin,
+            output: process.stdout,
+            prompt: '\nbot> '
+        });
+
+        logPenting('\n==========================================');
+        logPenting('  KONSOL TERMINAL AKTIF');
+        logPenting('  Ketik perintah di sini, hasilnya tampil di layar.');
+        logPenting('  Ketik "bantuan" untuk daftar perintah, "keluar" untuk berhenti.');
+        logPenting('==========================================');
+        rl.prompt();
+
+        rl.on('line', async (baris) => {
+            const teks = String(baris || '').trim();
+            if (!teks) return rl.prompt();
+
+            if (['keluar', 'exit', 'quit'].includes(teks.toLowerCase())) {
+                logPenting('👋 Konsol ditutup. Bot tetap berjalan.');
+                rl.close();
+                konsolAktif = false;
+                return;
+            }
+
+            if (['bantuan', 'help', '?'].includes(teks.toLowerCase())) {
+                logPenting('');
+                logPenting('  .status                      Lihat kondisi bot');
+                logPenting('  .getmembers <nama grup>      Sedot nomor anggota grup');
+                logPenting('  .setwhitelist <nomor>        Simpan daftar target');
+                logPenting('  .bulk <pesan>                Kirim pesan ke seluruh whitelist');
+                logPenting('  .stopbulk                    Hentikan pengiriman');
+                logPenting('  .kirim <nomor> <pesan>       Kirim pesan ke satu nomor');
+                logPenting('  keluar                       Tutup konsol (bot tetap jalan)');
+                logPenting('');
+                return rl.prompt();
+            }
+
+            const args = teks.split(/ +/);
+            const command = args[0].toLowerCase();
+
+            // Di konsol, hasil dicetak ke layar — bukan dikirim ke WhatsApp
+            const cetak = async (isi) => {
+                if (isi?.text) {
+                    logPenting('');
+                    logPenting(String(isi.text).replace(/\*/g, ''));
+                } else {
+                    logPenting(`   [${Object.keys(isi || {})[0] || 'pesan'}]`);
+                }
+            };
+
+            try {
+                // .kirim hanya ada di konsol: kirim pesan ke satu nomor
+                if (command === '.kirim') {
+                    const tujuan = (args[1] || '').replace(/[^0-9]/g, '');
+                    const isiPesan = args.slice(2).join(' ');
+                    if (tujuan.length < 8 || !isiPesan) {
+                        logPenting('❌ Format: .kirim 081234567890 halo apa kabar');
+                        return rl.prompt();
+                    }
+                    const nomor = tujuan.startsWith('0') ? '62' + tujuan.slice(1) : tujuan;
+                    const jid = `${nomor}@s.whatsapp.net`;
+                    const cek = await sock.onWhatsApp(jid);
+                    const ada = Array.isArray(cek) ? cek[0] : null;
+                    logPenting(`🔎 ${nomor} terdaftar? ${ada?.exists ? 'YA' : 'TIDAK'}`);
+                    if (!ada?.exists) return rl.prompt();
+                    await sock.sendMessage(ada.jid || jid, { text: isiPesan });
+                    return rl.prompt();
+                }
+
+                await jalankanPerintah({
+                    command,
+                    args,
+                    balas: cetak,
+                    extendedMessage: null,
+                    sender: ownerJid
+                });
+            } catch (err) {
+                logPenting(`❌ Error: ${err?.message || err}`);
+            }
+            rl.prompt();
+        });
+
+        rl.on('close', () => { konsolAktif = false; });
+    };
+
+    // ==========================================================
+    // PERINTAH ADMIN
+    // Dipanggil dari dua jalur:
+    //   1. Chat WhatsApp  -> balas() mengirim balasan ke chat
+    //   2. Konsol terminal -> balas() mencetak ke layar Termux
+    // ==========================================================
+    const jalankanPerintah = async ({ command, args, balas, extendedMessage, sender }) => {
         if (command === '.getmembers') {
             const groupName = args.slice(1).join(" ");
             if (!groupName) return await balas({ text: '❌ Ketik nama grupnya.' });
@@ -730,18 +849,31 @@ async function startBot() {
             if (isBulkRunning) return await balas({ text: '⚠️ Masih ada proses bulk yang berjalan. Tunggu selesai, atau ketik *.stopbulk*.' });
             if (tempWhitelist.length === 0) return await balas({ text: '❌ Memori kosong!' });
 
+            // Isi yang akan dikirim bisa datang dari dua cara:
+            //   1. Dari WhatsApp  -> reply pesan promo, lalu ketik .bulk
+            //   2. Dari terminal   -> .bulk <teks promonya langsung>
             const isReply = extendedMessage && extendedMessage.contextInfo && extendedMessage.contextInfo.stanzaId;
-            if (!isReply) return await balas({ text: '❌ Anda harus me-reply pesan!' });
+            const teksLangsung = args.slice(1).join(' ').trim();
 
-            const quotedContext = extendedMessage.contextInfo;
-            const messageToForward = {
-                key: {
-                    remoteJid: sender,
-                    id: quotedContext.stanzaId,
-                    participant: quotedContext.participant
-                },
-                message: quotedContext.quotedMessage
-            };
+            let isiKiriman;
+
+            if (isReply) {
+                const quotedContext = extendedMessage.contextInfo;
+                isiKiriman = {
+                    forward: {
+                        key: {
+                            remoteJid: sender,
+                            id: quotedContext.stanzaId,
+                            participant: quotedContext.participant
+                        },
+                        message: quotedContext.quotedMessage
+                    }
+                };
+            } else if (teksLangsung) {
+                isiKiriman = { text: teksLangsung };
+            } else {
+                return await balas({ text: '❌ Reply pesan promo lalu ketik *.bulk*,\natau ketik langsung: *.bulk isi pesannya di sini*' });
+            }
 
             // Saring nomor yang SUDAH pernah dikirimi pada whitelist ini (anti duplicate send)
             const targets = [];
@@ -804,7 +936,7 @@ async function startBot() {
 
                     const targetJid = batch[i];
                     try {
-                        await sock.sendMessage(targetJid, { forward: messageToForward });
+                        await sock.sendMessage(targetJid, isiKiriman);
                         sentHistory.add(targetJid); // Tandai supaya tidak dikirimi lagi
                         successCount++;
                         batchSuccess++;
@@ -880,7 +1012,7 @@ async function startBot() {
 
             await balas({ text: statusText });
         }
-    });
+    };
 }
 
 startBot();
